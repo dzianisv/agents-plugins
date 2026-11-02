@@ -18,8 +18,15 @@ Deleted during supervisor extraction cleanup. To restore any branch:
 - (local) issue-135-auto-review                       4fe631d
 - (local) issue-136-package-auto-review               9aa93b9
 
-## KEPT — unique unmerged work, not harvested
-- feat/cross-model-review                             b4a5718   # cross-model consensus verdict (not ported)
-- fix/opencode-worktree-sanitize-branch-name          1afc6b3   # worktree plugin fix (unrelated to supervisor)
-- issue-135-auto-review                               4fe631d   # auto-review CI work
-- issue-136-package-auto-review                       9aa93b9   # auto-review packaging (broader than the antipattern bit folded in)
+## Consolidation check — 2026-11-02
+
+All remaining branch work is now on `main`; none of the five branches carries unique code.
+
+- feat/148-slack-bridge                       0574a09   # `slack-bridge/` identical to main (#149)
+- feat/cross-model-review                     b4a5718   # cross-model review present in `reflection-3.ts` (#119)
+- fix/opencode-worktree-sanitize-branch-name  1afc6b3   # `scripts/opencode-worktree.ts` identical to main (#118)
+- issue-135-auto-review                       4fe631d   # `auto-review.ts` superseded by `packages/auto-review`
+- issue-136-package-auto-review               9aa93b9   # `packages/auto-review/` copied to main
+
+The five remote branches can now be deleted; restore any with
+`git push origin <sha>:refs/heads/<branch>`.

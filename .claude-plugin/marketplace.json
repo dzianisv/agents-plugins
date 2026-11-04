@@ -14,6 +14,15 @@
         "name": "dzianisv",
         "url": "https://github.com/dzianisv"
       }
+    },
+    {
+      "name": "task-gh-guard",
+      "source": "./packages/task-gh-guard",
+      "description": "Blocks the end of a turn while GitHub CI for a commit this session pushed is red or still running.",
+      "version": "0.1.1",
+      "author": {
+        "name": "Dzianis Vashchuk"
+      }
     }
   ]
 }

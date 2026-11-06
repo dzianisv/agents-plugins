@@ -904,7 +904,7 @@ class HooksFileTest(unittest.TestCase):
 
     def test_plugin_manifest(self):
         manifest = json.loads((CLAUDE.parent / ".claude-plugin" / "plugin.json").read_text())
-        self.assertEqual((manifest["name"], manifest["version"]), ("supervisor", "0.4.0"))
+        self.assertEqual((manifest["name"], manifest["version"]), ("turn-check", "0.5.0"))
         self.assertEqual(manifest["author"], {"name": "Dzianis Vashchuk"})
 
 

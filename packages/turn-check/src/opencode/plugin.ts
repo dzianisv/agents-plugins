@@ -16,6 +16,7 @@ const DEFAULT_JUDGE_TIMEOUT_MS = 120000
 const AUDIT_TITLE = "supervisor audit"
 const STALE_AUDIT_MS = 5 * 60 * 1000
 
+/** opencode v1 plugin: audit a session when it goes idle and attach the findings to the next user turn. */
 export const Supervisor: Plugin = async ({ client }) => {
   if (process.env.SUPERVISOR_ENABLED === "0" || isHeadlessRun(process.argv, process.env)) return {}
 

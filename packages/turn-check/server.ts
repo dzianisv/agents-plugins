@@ -65,6 +65,7 @@ const canonical = (p: string | undefined): string => {
   }
 }
 
+/** opencode v2 plugin entry: audits on execution events and attaches feedback via the context hook. */
 export default {
   id: "turn-check",
   async setup(ctx: any) {

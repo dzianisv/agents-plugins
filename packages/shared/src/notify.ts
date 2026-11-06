@@ -3,7 +3,8 @@
 //
 //   await notify("turn-check", "audit failed: judge timed out", { client })
 //
-// Raises a desktop notification and, when an opencode v1 client is given, an in-app toast. The same
+// Raises a desktop notification and, when an opencode v1 client is given, an in-app toast. It never writes
+// to stdout or stderr, which would corrupt the opencode TUI. The same
 // message shows at most once per AGENTS_NOTIFY_WINDOW seconds (default 600); the dedupe files are shared
 // with notify.py. AGENTS_NOTIFY=0 turns it off; AGENTS_NOTIFY_CMD replaces the platform command and
 // receives the title and message as its last two arguments; AGENTS_NOTIFY_STATE_DIR moves the state.
@@ -57,7 +58,6 @@ export async function notify(title: string, message: string, options: NotifyOpti
     const level = options.level ?? "error"
     const text = message.split(/\s+/).filter(Boolean).join(" ").slice(0, MAX_CHARS)
     if (seenRecently(title, text)) return false
-    console.error(`[${title}] ${text}`)
     options.client?.tui
       ?.showToast({ body: { title, message: text, variant: level, duration: 10000 } })
       ?.catch?.(() => {})

@@ -13,12 +13,11 @@ current session is red or still running.
 3. **Check only those commits.** Read check runs and statuses per recorded SHA, not per PR head. A newer
    commit from someone else on the branch does not change the verdict.
 4. **Clear when proven.** When every recorded SHA passes, delete the state file.
-5. **Bounded blocking.** A failing check blocks the stop with every failing check, its URL and the PR
-   number, at most once per turn (`stop_hook_active`) and once per pushed commit per hour
+5. **Bounded blocking.** A failing or pending check blocks the stop with every failing check, its URL
+   and the PR number, at most once per turn (`stop_hook_active`) and once per pushed commit per hour
    (`TASK_GH_GUARD_BLOCK_WINDOW`, default 3600 seconds), so a new commit still blocks while the same
-   dead commit cannot loop. Pending blocks once with "CI pending on `<branch>@<sha7>`". State survives
-   so the next turn checks again. opencode nudges at most once for pending and three times for a
-   failure per SHA set.
+   commit cannot loop. Pending says "CI pending on `<branch>@<sha7>`". State survives so a later turn
+   checks again. opencode nudges at most once for pending and three times for a failure per SHA set.
 
 State lives in `~/.agents/state/task-gh-guard/<runtime>-<session_id>.json`.
 

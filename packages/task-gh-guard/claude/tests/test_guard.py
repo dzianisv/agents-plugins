@@ -199,6 +199,30 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(second.stdout.strip(), "")
         self.assertTrue(self.state_path().exists(), "state survives so the next turn checks again")
 
+    def test_pending_blocks_once_per_commit_per_window(self):
+        self.make_repo()
+        sha = self.branch("feature/x")
+        self.push_hook()
+        self.scenario({sha: {"check_runs": [{
+            "name": "build-and-test", "status": "in_progress", "conclusion": None,
+        }]}})
+        self.assertEqual(json.loads(self.stop().stdout)["decision"], "block")
+
+        again = self.stop()
+        self.assertEqual(again.stdout.strip(), "", "pending must not block again inside the window")
+        self.assertTrue(self.state_path().exists(), "state survives so a later turn checks again")
+
+    def test_pending_blocks_again_after_window(self):
+        self.make_repo()
+        sha = self.branch("feature/x")
+        self.push_hook()
+        self.scenario({sha: {"check_runs": [{
+            "name": "build-and-test", "status": "in_progress", "conclusion": None,
+        }]}})
+        env = {**self.env, "TASK_GH_GUARD_BLOCK_WINDOW": "0"}
+        self.assertEqual(json.loads(self.stop(env=env).stdout)["decision"], "block")
+        self.assertEqual(json.loads(self.stop(env=env).stdout)["decision"], "block")
+
     def test_fail_blocks_once_per_turn(self):
         self.make_repo()
         sha = self.branch("feature/x")

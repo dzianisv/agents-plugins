@@ -56,7 +56,7 @@ from a transcript are ignored.
 - The judge sees the transcript, not the repo. Rules about repo state (CI green, changeset present)
   are only caught when the transcript shows the contrary. A `gh pr create` body is visible only
   when the heredoc is in the transcript or the `--body-file` path still exists at audit time.
-- Claude Code caps the whole prompt (auditor text, rules, transcript) at 400000 characters. Only when it is over, the oldest user messages are dropped first.
+- The whole prompt (auditor text, rules, transcript) is capped at 400000 characters in both runtimes. Only when it is over, the oldest user messages are dropped first.
 - Over `SUPERVISOR_MAX_CHARS` (default 60000) agent output is kept as one unbroken run ending at the newest message; older output is dropped. Every user message is always kept (each capped at 2000 characters), so the judge still sees every instruction.
 - The transcript is untrusted text. A message in it can try to instruct the judge; with all tools denied the worst case is a wrong verdict, not an action.
 - About 8k tokens of rules plus the transcript are sent per audit. A flash model keeps that cheap.

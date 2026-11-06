@@ -209,7 +209,7 @@ export async function runJudge(prompt: string, options: JudgeRunOptions): Promis
     killGroup(child.pid)
     if (result.timedOut) throw new JudgeError(`judge timed out after ${options.timeoutSeconds}s`)
     if (result.code !== 0) {
-      const detail = squash(result.stderr || result.stdout).slice(0, 200)
+      const detail = squash(result.stderr || result.stdout).trim().slice(0, 200)
       throw new JudgeError(`opencode exited ${result.code}: ${detail}`)
     }
     return replyFromEvents(stdout)

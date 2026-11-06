@@ -82,14 +82,14 @@ def main() -> int:
     if data.get("stop_hook_active"):
         return 0  # one block per turn; the state file survives for the next turn
     now = int(time.time())
-    if result["status"] == "fail" and reported(state, result, now, block_window()):
+    if reported(state, result, now, block_window()):
         return 0  # this commit already blocked within the window; do not burn another turn
     reason = result.get("message") or f"CI is {result['status']} for a commit this session pushed."
     if result["status"] == "pending":
         reason += "\nSay it is pending; do not claim done."
     else:
         reason += "\nFix the failing check or report it as a known failure; do not claim the task is done."
-        mark(state, result, now)
+    mark(state, result, now)
     print(json.dumps({"decision": "block", "reason": reason}))
     return 0
 

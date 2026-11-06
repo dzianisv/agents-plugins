@@ -19,7 +19,7 @@
       "name": "task-gh-guard",
       "source": "./packages/task-gh-guard",
       "description": "Blocks the end of a turn while GitHub CI for a commit this session pushed is red or still running.",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "author": {
         "name": "Dzianis Vashchuk"
       }

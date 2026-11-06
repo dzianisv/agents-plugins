@@ -15,7 +15,7 @@ const auditLog = join(dir, "state", "audits.jsonl")
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-const { Supervisor } = await import("../opencode/plugin")
+const { Supervisor } = await import("../src/opencode/plugin")
 
 const conversation = [
   { info: { id: "m1", role: "user", sessionID: "s1" }, parts: [{ type: "text", text: "status?" }] },
@@ -322,7 +322,11 @@ describe("audit log", () => {
     await hooks.event({ event: { type: "session.idle", properties: { sessionID: "l1" } } })
     await waitFor(() => calls.deleted.length > 0)
     await waitFor(() => existsSync(auditLog) && readFileSync(auditLog, "utf8").includes("l1"))
-    const entry = readFileSync(auditLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.sessionID === "l1")
+    const entry = readFileSync(auditLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .find((e) => e.sessionID === "l1")
     expect(entry.error).toBe("unparseable verdict")
     expect(statSync(auditLog).mode & 0o777).toBe(0o600)
     expect(statSync(join(dir, "state")).mode & 0o777).toBe(0o700)
@@ -367,7 +371,12 @@ test("a hung judge is aborted at the timeout, its session deleted, and the turn 
 
 describe("startup cleanup of leftover audit sessions", () => {
   const minutes = (n: number) => Date.now() - n * 60000
-  const session = (id: string, title: string, ageMinutes: number, parentID: string | null = "parent") => ({ id, title, parentID, time: { created: minutes(ageMinutes), updated: minutes(ageMinutes) } })
+  const session = (id: string, title: string, ageMinutes: number, parentID: string | null = "parent") => ({
+    id,
+    title,
+    parentID,
+    time: { created: minutes(ageMinutes), updated: minutes(ageMinutes) },
+  })
 
   test("deletes only old child sessions titled exactly supervisor audit, never a top-level one", async () => {
     const { client, calls } = fakeClient({

@@ -66,8 +66,7 @@ function fakeCtx(opts: { parentID?: string; replies?: string[]; verdict?: string
   return { ctx, calls, events }
 }
 
-const idle = (events: ReturnType<typeof channel>, sessionID: string) =>
-  events.push({ type: "session.execution.succeeded", data: { sessionID } })
+const idle = (events: ReturnType<typeof channel>, sessionID: string) => events.push({ type: "session.execution.succeeded", data: { sessionID } })
 
 const userMessage = (id: string, content: any[] = [{ type: "text", text: "next question" }]) => ({ id, role: "user", content })
 
@@ -90,7 +89,11 @@ test("idle audit calls the judge with rules and transcript, and records the verd
   expect(prompt).toContain("TRANSCRIPT:")
   expect(prompt).toContain("[#1 ASSISTANT]")
 
-  const entry = readFileSync(auditLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.sessionID === "s1")
+  const entry = readFileSync(auditLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l))
+    .find((e) => e.sessionID === "s1")
   expect(entry.verdict).toBe("FAIL")
   expect(entry.messageID).toBe("m2")
   expect(entry.violations[0].rule).toBe("Replies max 6 lines")
@@ -176,7 +179,11 @@ test("an unparseable verdict is recorded as an error and retried on the next idl
   idle(events, "s5")
   await waitFor(() => calls.generated.length === 1)
   await waitFor(() => existsSync(auditLog) && readFileSync(auditLog, "utf8").includes("s5"))
-  const entry = readFileSync(auditLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.sessionID === "s5")
+  const entry = readFileSync(auditLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l))
+    .find((e) => e.sessionID === "s5")
   expect(entry.error).toBe("unparseable verdict")
   idle(events, "s5")
   await waitFor(() => calls.generated.length === 2)
@@ -238,7 +245,7 @@ describe("v2 adapters", () => {
     expect(msgs.map((m) => m.info.role)).toEqual(["user", "assistant"])
     expect(msgs[1].parts.map((p) => p.type)).toEqual(["text", "tool"])
     expect(msgs[1].parts[1].tool).toBe("bash")
-    expect(msgs[1].parts[1].state.output).toBe("files")
+    expect((msgs[1].parts[1] as { output: string }).output).toBe("files")
   })
 
   test("isRealUserMessageV2 and attachFeedbackV2", () => {

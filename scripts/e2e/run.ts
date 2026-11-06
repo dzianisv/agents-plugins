@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { exportAuth, removeAuth } from "./auth"
-import type { Runtime } from "./spec"
+import { loadSpec, type Runtime, type Spec } from "./spec"
 
 const IMAGE = "agents-plugins-e2e:local"
 
@@ -63,6 +63,11 @@ export function discoverPlugins(repo: string): string[] {
   } catch {
     return []
   }
+}
+
+/** The requested runtimes a spec actually supports; a one-runtime spec runs one container. */
+export function runtimesFor(spec: Spec, requested: Runtime[]): Runtime[] {
+  return requested.filter((runtime) => spec.runtimes.includes(runtime))
 }
 
 /** Parses one result file; null when it is not a well-formed result. */
@@ -176,7 +181,17 @@ async function main(argv: string[]): Promise<number> {
   try {
     exportAuth(authDir)
     for (const plugin of options.plugins) {
-      for (const runtime of options.runtimes) {
+      let runtimes = options.runtimes
+      try {
+        runtimes = runtimesFor(await loadSpec(repo, plugin), options.runtimes)
+      } catch (err) {
+        console.log(`[e2e] ${plugin}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      if (!runtimes.length) {
+        console.log(`[e2e] ${plugin}: no requested runtime in the spec, skipping`)
+        continue
+      }
+      for (const runtime of runtimes) {
         const key = `${plugin}-${runtime}`
         const workDir = join(runRoot, `work-${key}`)
         mkdirSync(workDir, { recursive: true })

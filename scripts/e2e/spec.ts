@@ -1,4 +1,5 @@
 // The spec type every plugin e2e test uses, plus loading and validation for the container driver.
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -35,6 +36,8 @@ export type Spec = {
   runtimes: Runtime[]
   prompt: string
   claude?: ClaudeOptions
+  /** Extra environment variables for the runtime process; the notify recorder wins on conflicts. */
+  env?: Record<string, string>
   /** Prepares container state and returns the directory the runtime runs in. */
   setup?: (ctx: SetupContext) => string | void | Promise<string | void>
   checks: Check[]
@@ -56,6 +59,33 @@ export async function waitFor<T>(probe: () => T | undefined, timeoutMs = 120_000
   }
 }
 
+/** The opencode log line that shows the plugin dir failed to load, or undefined when it loaded. */
+export function opencodeLoadFailure(log: string, pluginDir: string): string | undefined {
+  return log.split("\n").find((line) => line.includes(pluginDir) && (line.includes("level=ERROR") || line.includes("failed to load plugin")))
+}
+
+/** A spec check that the opencode log shows the plugin loaded without a failed-to-load line. */
+export function opencodeLoadedCheck(plugin: string): Check {
+  return {
+    name: "loaded in opencode",
+    run: (ctx) => {
+      const dir = join(ctx.repo, "packages", plugin)
+      const dataDir = process.env.XDG_DATA_HOME ?? join(ctx.home, ".local", "share")
+      const logPath = join(dataDir, "opencode", "log", "opencode.log")
+      let log: string
+      try {
+        log = readFileSync(logPath, "utf8")
+      } catch {
+        return { ok: false, detail: `no opencode log at ${logPath}` }
+      }
+      if (!log.includes("loading plugin") || !log.includes(`id=${dir}`)) return { ok: false, detail: `no "loading plugin" line for ${dir}` }
+      const failure = opencodeLoadFailure(log, dir)
+      if (failure) return { ok: false, detail: failure.slice(0, 200) }
+      return { ok: true, detail: `loaded from ${dir}` }
+    },
+  }
+}
+
 const RUNTIMES = new Set<string>(["claude", "opencode"])
 
 /** Throws when a value is not a valid spec; returns it typed. */
@@ -68,6 +98,10 @@ export function validateSpec(value: unknown, plugin?: string): Spec {
   for (const runtime of spec.runtimes) if (!RUNTIMES.has(runtime)) throw new Error(`unknown runtime "${String(runtime)}"`)
   if (new Set(spec.runtimes).size !== spec.runtimes.length) throw new Error("spec.runtimes has duplicates")
   if (typeof spec.prompt !== "string" || !spec.prompt.trim()) throw new Error("spec.prompt must be a non-empty string")
+  if (spec.env !== undefined) {
+    if (!spec.env || typeof spec.env !== "object" || Array.isArray(spec.env)) throw new Error("spec.env must be an object of strings")
+    for (const [key, value] of Object.entries(spec.env)) if (typeof value !== "string") throw new Error(`spec.env.${key} must be a string`)
+  }
   if (!Array.isArray(spec.checks) || spec.checks.length === 0) throw new Error("spec.checks must be a non-empty array")
   for (const check of spec.checks) {
     if (!check || typeof check.name !== "string" || !check.name) throw new Error("every check needs a name")

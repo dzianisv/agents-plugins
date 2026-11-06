@@ -1,13 +1,12 @@
-// Failure notifications shared by the agents-plugins packages.
-// Source of truth: packages/shared/notify.ts. `scripts/sync-shared.sh` copies it into each package.
+// Failure notifications shared by the agents-plugins packages; each package links this directory as src/shared.
 //
 //   await notify("turn-check", "audit failed: judge timed out", { client })
 //
-// Raises a desktop notification and, when an opencode v1 client is given, an in-app toast. It never writes
-// to stdout or stderr, which would corrupt the opencode TUI. The same
-// message shows at most once per AGENTS_NOTIFY_WINDOW seconds (default 600); the dedupe files are shared
-// with notify.py. AGENTS_NOTIFY=0 turns it off; AGENTS_NOTIFY_CMD replaces the platform command and
-// receives the title and message as its last two arguments; AGENTS_NOTIFY_STATE_DIR moves the state.
+// Raises a desktop notification and, when an opencode v1 client is given, an in-app toast. It never writes to
+// stdout or stderr, which would corrupt the opencode TUI. The same message shows at most once per
+// AGENTS_NOTIFY_WINDOW seconds (default 600). AGENTS_NOTIFY=0 turns it off; AGENTS_NOTIFY_CMD replaces the
+// platform command and receives the title and message as its last two arguments; AGENTS_NOTIFY_STATE_DIR
+// moves the dedupe state.
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdirSync, statSync, writeFileSync, utimesSync } from "node:fs"

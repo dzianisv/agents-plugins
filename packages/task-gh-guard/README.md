@@ -1,9 +1,52 @@
 # task-gh-guard
 
-Stops an agent from claiming a task is done while GitHub CI for a commit it pushed in the
-current session is red or still running.
+Two guards for an agent that works through git and GitHub:
 
-## Rules
+- It stops the agent from claiming a task is done while GitHub CI for a commit it pushed in the
+  current session is red or still running.
+- It reviews each git or GitHub write (commit, push, PR or issue comment, review reply, thread
+  resolve) against plain-English rules with a judge model, and blocks the command that breaks one.
+
+## Rule review
+
+Before a `git commit|push`, `gh stack push|submit|link`, `gh pr|issue` write or a writing `gh api` call
+(non-GET method, `-f`/`-F` fields, or a GraphQL `mutation`), the plugin runs
+`opencode run -m "$(< model)"` with the rules and the command, and the judge answers `ALLOW` or
+`DENY: <reason>`. A deny blocks the tool call and the reason goes back to the agent. Reads never reach
+the judge.
+
+Both files live in `~/.agents/plugins/task-gh-guard/` and are created with defaults on the first
+session start or Bash call. An existing file is never overwritten, so edit them freely.
+
+| File | Content |
+| --- | --- |
+| `model` | One `provider/model` line, default `fireworks-ai/accounts/fireworks/routers/deepseek-flash-latest` |
+| `rules` | One plain-English rule per line (a directory of `*.md` files also works) |
+
+Default rules:
+
+```
+- Plain english. Tldr, do not write a lot.
+- Remove AI slop.
+- To a change request reply with commit id where it is addressed.
+- Do not resolve threads when replied
+```
+
+The review fails open: no `opencode`, a timeout (`TASK_GH_GUARD_REVIEW_TIMEOUT`, default 60 seconds) or an
+unreadable verdict allows the command, shows a warning, and is logged with every verdict to
+`~/.agents/state/task-gh-guard/review.jsonl`. Missing API keys are read from `~/.env` for the judge process
+only. Set `TASK_GH_GUARD_REVIEW=0` to turn the review off. Each review adds about 5 seconds to a write
+command. Runs in Claude Code (`PreToolUse`) and the opencode v1 plugin; the opencode v2 `server.ts` entry
+does not review yet.
+
+Try it by hand:
+
+```bash
+bin/git-rules-review init
+bin/git-rules-review check --command "gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"x\"}) { thread { id } } }'"
+```
+
+## CI gate rules
 
 1. **No push, no check.** Only a successful push in this session arms the guard. A session that only
    reads code never runs git or `gh` at stop time.

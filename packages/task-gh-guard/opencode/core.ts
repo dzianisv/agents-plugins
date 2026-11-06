@@ -89,6 +89,24 @@ export async function record(sessionID: string, command: string, cwd: string): P
   }
 }
 
+export type Review = { decision: "allow" | "deny" | "skip"; reason: string }
+
+export const reviewPath = () =>
+  process.env.TASK_GH_GUARD_REVIEW_BIN || join(here, "..", "bin", "git-rules-review")
+
+// Asks the judge model whether a git or GitHub write breaks the rules file; a broken review allows.
+export async function review(command: unknown): Promise<Review> {
+  if (typeof command !== "string") return { decision: "skip", reason: "" }
+  const result = await run("python3", [reviewPath(), "check", "--command", command], 120000)
+  try {
+    const parsed = JSON.parse(result.stdout) as Review
+    if (parsed && ["allow", "deny", "skip"].includes(parsed.decision)) return parsed
+  } catch {
+    // fall through
+  }
+  return { decision: "skip", reason: "rule review skipped" }
+}
+
 export async function gate(file: string): Promise<Gate> {
   if (!existsSync(file)) return { status: "pass", message: "", entries: [] }
   const result = await run("python3", [binPath(), "--state", file, "--json"], 110000)

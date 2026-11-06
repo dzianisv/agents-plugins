@@ -8,6 +8,7 @@ import {
   nudgeAllowed,
   nudgeKey,
   record,
+  review,
   stateFile,
   type Gate,
   type Nudges,
@@ -40,6 +41,9 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
     "tool.execute.before": async (input, output) => {
       if (!TOOLS.has(input.tool)) return
       const command = (output.args ?? {}).command
+      const verdict = await review(command)
+      if (verdict.decision === "deny") throw new Error(`task-gh-guard rules: ${verdict.reason}`)
+      if (verdict.reason.startsWith("rule review skipped")) log("error", verdict.reason)
       if (isPushCommand(command)) commands.set(input.callID, command)
     },
 

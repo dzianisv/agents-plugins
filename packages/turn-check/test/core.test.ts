@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { attachFeedback, auditorSystem, formatFeedback, hasAgentWork, isHeadlessRun, isRealUserMessage, judgeAgent, parseModel, parseVerdict, prDraft, pruneAuditLines, renderTranscript, type Msg } from "../opencode/core"
+import { pruneAuditLines } from "../src/core/audit-log"
+import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../src/core/opencode"
+import { auditorSystem, formatFeedback, hasAgentWork, parseVerdict, prDraft, renderTranscript, type Msg } from "../src/core/prompt"
 
 const msg = (id: string, role: string, parts: any[]): Msg => ({ info: { id, role }, parts })
 const text = (t: string, extra: object = {}) => ({ type: "text", text: t, ...extra })
-const tool = (name: string, input: object, output = "") => ({ type: "tool", tool: name, state: { status: "completed", input, output } })
+const tool = (name: string, input: object, output = "") => ({ type: "tool", tool: name, input, output })
 
 describe("parseModel", () => {
   test("keeps slashes inside the model id", () => {
@@ -126,6 +128,9 @@ describe("judgeAgent", () => {
     expect(agent.mode).toBe("subagent")
     expect(agent.hidden).toBe(true)
   })
+  test("JUDGE_AGENT names the hidden agent", () => {
+    expect(JUDGE_AGENT).toBe("supervisor-judge")
+  })
 })
 
 describe("formatFeedback and auditorSystem", () => {
@@ -180,7 +185,7 @@ describe("feedback helpers", () => {
     expect(attachFeedback(m, "fix it")).toBe(false)
     expect(m.parts).toHaveLength(2)
     expect(m.parts[1]).toMatchObject({ type: "text", synthetic: true, messageID: "1" })
-    expect(m.parts[1].text).toContain("fix it")
+    expect((m.parts[1] as { text: string }).text).toContain("fix it")
   })
 })
 

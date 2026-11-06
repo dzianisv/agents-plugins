@@ -1,12 +1,17 @@
+// opencode v1 plugin: audit a session when it goes idle and attach the findings to the next user
+// turn. The judge is a hidden child session; everything else lives in src/core.
 import type { Plugin } from "@opencode-ai/plugin"
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { notify } from "./notify"
-import { attachFeedback, auditorSystem, DEFAULT_MODEL, formatFeedback, hasAgentWork, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel, parseVerdict, pruneAuditLines, renderTranscript } from "./core"
+import { auditOnce, type AuditStore } from "../core/audit"
+import { pruneLog, record } from "../core/audit-log"
+import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
+import { DEFAULT_MODEL } from "../core/prompt"
+import { stateDir } from "../core/state"
+import { notify } from "../shared/notify"
+import { toMsg } from "./messages"
 
-const logDir = () => process.env.SUPERVISOR_HOME || join(homedir(), ".cache", "supervisor")
-const LOG_RETENTION_MS = 30 * 24 * 3600 * 1000
 const DEFAULT_JUDGE_TIMEOUT_MS = 120000
 const AUDIT_TITLE = "supervisor audit"
 const STALE_AUDIT_MS = 5 * 60 * 1000
@@ -28,35 +33,9 @@ export const Supervisor: Plugin = async ({ client }) => {
   const injected = new Map<string, { messageID: string; feedback: string }>()
   const auditing = new Set<string>()
 
-  const log = (level: "info" | "error", message: string) => {
+  const log = (level: "info" | "error", message: string): void => {
     if (level === "error") void notify("turn-check", message, { client })
-    return client.app.log({ body: { service: "supervisor", level, message } }).catch(() => {})
-  }
-
-  const ensureLogDir = () => {
-    mkdirSync(logDir(), { recursive: true, mode: 0o700 })
-    chmodSync(logDir(), 0o700)
-  }
-
-  const record = (entry: object) => {
-    try {
-      ensureLogDir()
-      const file = join(logDir(), "audits.jsonl")
-      appendFileSync(file, JSON.stringify({ time: new Date().toISOString(), model: spec, ...entry }) + "\n", { mode: 0o600 })
-      chmodSync(file, 0o600)
-    } catch {}
-  }
-
-  const pruneAuditLog = () => {
-    try {
-      const file = join(logDir(), "audits.jsonl")
-      const text = readFileSync(file, "utf8")
-      const kept = pruneAuditLines(text, Date.now(), LOG_RETENTION_MS)
-      if (kept === text) return
-      const tmp = `${file}.${process.pid}.tmp`
-      writeFileSync(tmp, kept, { mode: 0o600 })
-      renameSync(tmp, file)
-    } catch {}
+    void client.app.log({ body: { service: "supervisor", level, message } }).catch(() => {})
   }
 
   const childSession = async (id: string) => {
@@ -85,10 +64,10 @@ export const Supervisor: Plugin = async ({ client }) => {
     throw new Error("judge did not answer in time")
   }
 
-  const promptJudge = async (auditID: string, transcript: string, rules: string, deadline: number) => {
+  const promptJudge = async (auditID: string, system: string, transcript: string, deadline: number) => {
     const res = await client.session.prompt({
       path: { id: auditID },
-      body: { agent: JUDGE_AGENT, model, system: auditorSystem(rules), parts: [{ type: "text", text: `TRANSCRIPT:\n\n${transcript}` }] },
+      body: { agent: JUDGE_AGENT, model, system, parts: [{ type: "text", text: `TRANSCRIPT:\n\n${transcript}` }] },
     })
     const early = (res.data as any)?.info?.role === "user"
     const answer = early ? await waitForAssistant(auditID, deadline) : { info: (res.data as any)?.info, parts: (res.data?.parts ?? []) as any[] }
@@ -102,67 +81,80 @@ export const Supervisor: Plugin = async ({ client }) => {
     return { text: answer.parts.flatMap((p) => (p.type === "text" ? [p.text as string] : [])).join(""), meta }
   }
 
-  const judge = async (sessionID: string, transcript: string, rules: string) => {
-    const created = await client.session.create({ body: { parentID: sessionID, title: AUDIT_TITLE } })
-    const auditID = created.data?.id
-    if (!auditID) throw new Error("could not create audit session")
-    isChild.set(auditID, true)
-    auditing.add(auditID)
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-      const work = promptJudge(auditID, transcript, rules, Date.now() + judgeTimeoutMs)
-      work.catch(() => {})
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          client.session.abort({ path: { id: auditID } }).catch(() => {})
-          reject(new Error("judge timed out"))
-        }, judgeTimeoutMs)
-      })
-      return await Promise.race([work, timeout])
-    } finally {
-      clearTimeout(timer)
-      auditing.delete(auditID)
-      client.session.delete({ path: { id: auditID } }).catch(() => {})
-    }
-  }
-
   const audit = async (sessionID: string) => {
     const res = await client.session.messages({ path: { id: sessionID } })
-    const msgs = (res.data ?? []) as any[]
+    const msgs = ((res.data ?? []) as any[]).map(toMsg)
     const last = msgs.at(-1)
-    if (!last || audited.get(sessionID) === last.info.id || !hasAgentWork(msgs)) return
+    if (!last) return
 
-    const started = Date.now()
-    const rules = readFileSync(rulesPath, "utf8")
-    const { text: reply, meta } = await judge(sessionID, renderTranscript(msgs, maxChars), rules)
-    const verdict = parseVerdict(reply)
-    if (!verdict) {
-      record({ sessionID, messageID: last.info.id, ...meta, error: "unparseable verdict", reply: reply.slice(0, 300) })
-      log("error", `audit failed: unparseable verdict ${JSON.stringify(reply.slice(0, 80))} ${meta.error !== "null" ? meta.error : ""}`)
-      return
-    }
-    audited.set(sessionID, last.info.id)
-    record({ sessionID, messageID: last.info.id, ms: Date.now() - started, ...verdict })
-    if (verdict.verdict === "PASS") {
-      pending.delete(sessionID)
-      injected.delete(sessionID)
-      return
+    let judgeMeta: Record<string, unknown> = {}
+    const judge = async (system: string, transcript: string): Promise<string> => {
+      const created = await client.session.create({ body: { parentID: sessionID, title: AUDIT_TITLE } })
+      const auditID = created.data?.id
+      if (!auditID) throw new Error("could not create audit session")
+      isChild.set(auditID, true)
+      auditing.add(auditID)
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const work = promptJudge(auditID, system, transcript, Date.now() + judgeTimeoutMs)
+        work.catch(() => {})
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            client.session.abort({ path: { id: auditID } }).catch(() => {})
+            reject(new Error("judge timed out"))
+          }, judgeTimeoutMs)
+        })
+        const answer = await Promise.race([work, timeout])
+        judgeMeta = answer.meta
+        return answer.text
+      } finally {
+        clearTimeout(timer)
+        auditing.delete(auditID)
+        client.session.delete({ path: { id: auditID } }).catch(() => {})
+      }
     }
 
-    pending.set(sessionID, formatFeedback(verdict.violations))
-    client.tui
-      .showToast({
-        body: {
-          title: "supervisor",
-          message: `${verdict.violations.length} rule violation(s): ${verdict.violations.map((v) => v.rule).join("; ")}`,
-          variant: "warning",
-          duration: 10000,
-        },
-      })
-      .catch(() => {})
+    const store: AuditStore = {
+      lastAudited: () => audited.get(sessionID) ?? "",
+      markAudited: (messageID) => void audited.set(sessionID, messageID),
+      readPending: () => pending.get(sessionID) ?? "",
+      writePending: (text) => void pending.set(sessionID, text),
+      clearPending: () => {
+        pending.delete(sessionID)
+        injected.delete(sessionID)
+      },
+    }
+
+    await auditOnce({
+      sessionID,
+      msgs,
+      messageID: last.info.id,
+      rules: () => readFileSync(rulesPath, "utf8"),
+      judge,
+      maxChars,
+      model: spec,
+      agent: "opencode",
+      store,
+      record: (entry) => record(stateDir(), entry),
+      notify: (message) => log("error", message),
+      onVerdict: (verdict) => {
+        if (verdict.verdict !== "FAIL") return
+        client.tui
+          .showToast({
+            body: {
+              title: "supervisor",
+              message: `${verdict.violations.length} rule violation(s): ${verdict.violations.map((v) => v.rule).join("; ")}`,
+              variant: "warning",
+              duration: 10000,
+            },
+          })
+          .catch(() => {})
+      },
+      extra: () => judgeMeta,
+    })
   }
 
-  pruneAuditLog()
+  pruneLog(stateDir())
   cleanupStaleAudits().catch(() => {})
 
   return {
@@ -196,15 +188,15 @@ export const Supervisor: Plugin = async ({ client }) => {
       const sessionID = user.info.sessionID
       const tracked = injected.get(sessionID)
       if (tracked?.messageID === user.info.id) {
-        attachFeedback(user, tracked.feedback)
+        attachFeedback(user as any, tracked.feedback)
         return
       }
       if (tracked) injected.delete(sessionID)
       const feedback = pending.get(sessionID)
-      if (!feedback || !isRealUserMessage(user)) return
+      if (!feedback || !isRealUserMessage(user as any)) return
       pending.delete(sessionID)
       injected.set(sessionID, { messageID: user.info.id, feedback })
-      attachFeedback(user, feedback)
+      attachFeedback(user as any, feedback)
     },
   }
 }

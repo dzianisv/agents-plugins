@@ -13,7 +13,7 @@ carries a `turn-check ERROR:` note. `AGENTS_NOTIFY=0` turns the notification off
 
 ## Install
 
-Claude Code (needs `python3` and the `opencode` CLI on PATH, the audit runs through it). After any change, bump `version` in `.claude-plugin/plugin.json` and run `claude plugin update turn-check@agents-plugins`:
+Claude Code (needs `bun` and the `opencode` CLI on PATH, the audit runs through it). After any change, bump `version` in `.claude-plugin/plugin.json` and run `claude plugin update turn-check@agents-plugins`:
 
 ```bash
 claude plugin marketplace add dzianisv/opencode-plugins
@@ -26,7 +26,9 @@ opencode: add this directory to `plugins` in `~/.config/opencode/opencode.json`,
 /absolute/path/to/opencode-plugins/packages/turn-check
 ```
 
-One entry serves both generations: opencode v1 resolves the directory through `package.json` (`main`/`exports` → `opencode/plugin.ts`), opencode v2 loads `server.ts` at the repo root. v2 rejects config entries that point at a file (`configured plugin path must be a directory`), so the old `.../opencode/plugin.ts` entry no longer works there.
+One entry serves both generations: opencode v1 resolves the directory through `package.json` (`main`/`exports` → `src/opencode/plugin.ts`), opencode v2 loads `server.ts` at the repo root. v2 rejects config entries that point at a file (`configured plugin path must be a directory`), so the old `.../opencode/plugin.ts` entry no longer works there.
+
+All logic lives in one TypeScript core, `src/core/`, that both runtimes call. Claude Code hooks are thin entrypoints in `src/claude/` (wired by `hooks/hooks.json` with `bun`); the opencode v1 plugin is `src/opencode/plugin.ts` and the v2 entry is `server.ts`.
 
 v2 differences from v1:
 
@@ -57,8 +59,7 @@ Every audit is logged to `~/.cache/supervisor/audits.jsonl` (`"agent":"claude-co
 ## Test
 
 ```bash
-bun test                                      # opencode
-python3 -m unittest discover -s claude/tests  # Claude Code
+bun test
 ```
 
 Live checks against the real model need `@opencode-ai/sdk` on the module path (for example, symlink

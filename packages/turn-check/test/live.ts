@@ -1,7 +1,8 @@
 import { createOpencode } from "@opencode-ai/sdk"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { auditorSystem, DEFAULT_MODEL, JUDGE_AGENT, judgeAgent, parseModel, parseVerdict, renderTranscript } from "../opencode/core"
+import { JUDGE_AGENT, judgeAgent, parseModel } from "../src/core/opencode"
+import { auditorSystem, DEFAULT_MODEL, parseVerdict, renderTranscript } from "../src/core/prompt"
 
 const m = (id: string, role: string, t: string) => ({ info: { id, role }, parts: [{ type: "text", text: t }] })
 

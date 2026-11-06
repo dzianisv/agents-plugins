@@ -13,7 +13,7 @@ const log = join(dir, "home", "audits.jsonl")
 
 const port = Number(process.env.PORT ?? 4098)
 const model = (process.env.MAIN_MODEL ?? "fireworks-ai/accounts/fireworks/models/deepseek-v4p1-flash").split("/")
-const plugin = `file://${join(import.meta.dir, "..", "opencode", "plugin.ts")}`
+const plugin = `file://${join(import.meta.dir, "..", "src", "opencode", "plugin.ts")}`
 const { client, server } = await createOpencode({ port, config: { plugin: [plugin] } as any })
 
 const withTimeout = <T>(p: Promise<T>, ms: number) =>

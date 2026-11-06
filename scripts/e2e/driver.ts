@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process"
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { loadSpec, type Check, type CheckContext, type CheckResult, type Runtime, type Spec } from "./spec"
+import { loadSpec, opencodeLoadFailure, type Check, type CheckContext, type CheckResult, type Runtime, type Spec } from "./spec"
 
 const SRC = "/src"
 const WORK = "/work/agents-plugins"
@@ -48,6 +48,11 @@ export function redact(text: string): string {
 /** The last 40 lines of some output, redacted and capped; the result file's debug tail. */
 export function tail(...parts: string[]): string {
   return redact(parts.filter(Boolean).join("\n").split("\n").slice(-40).join("\n")).slice(-4000)
+}
+
+/** The runtime environment: the spec env over the driver's, with the notify recorder fixed last. */
+export function runtimeEnv(spec: Spec, base: NodeJS.ProcessEnv, notify: { cmd: string; log: string }): NodeJS.ProcessEnv {
+  return { ...base, ...(spec.env ?? {}), AGENTS_NOTIFY_CMD: notify.cmd, E2E_NOTIFY_LOG: notify.log }
 }
 
 type ExecResult = { code: number | null; stdout: string; stderr: string }
@@ -154,8 +159,8 @@ function opencodeLoaded(plugin: string, ctx: CheckContext): CheckResult {
   const dir = join(ctx.repo, "packages", plugin)
   const loaded = log.split("\n").some((line) => line.includes("loading plugin") && line.includes(`id=${dir}`) && line.includes("entrypoint=file://"))
   if (!loaded) return { ok: false, detail: `no "loading plugin" line for ${dir}` }
-  const error = log.split("\n").find((line) => line.includes("level=ERROR") && line.includes(dir))
-  if (error) return { ok: false, detail: `plugin error in log: ${redact(error).slice(0, 200)}` }
+  const failure = opencodeLoadFailure(log, dir)
+  if (failure) return { ok: false, detail: `plugin error in log: ${redact(failure).slice(0, 200)}` }
   return { ok: true, detail: `loaded from ${dir}` }
 }
 
@@ -211,11 +216,10 @@ async function main(runtime: Runtime, plugin: string): Promise<number> {
     const cwd = (await spec.setup?.({ runtime, repo: WORK, home, out: OUT })) || join(home, "work")
     mkdirSync(cwd, { recursive: true })
     console.log(`[driver] ${plugin}/${runtime}: running the runtime in ${cwd}`)
-    const run = await runRuntime(runtime, spec, cwd, {
-      ...process.env,
-      AGENTS_NOTIFY_CMD: `bun ${join(WORK, "scripts", "e2e", "notify-recorder.ts")}`,
-      E2E_NOTIFY_LOG: notifyLog,
-    })
+    const run = await runRuntime(runtime, spec, cwd, runtimeEnv(spec, process.env, {
+      cmd: `bun ${join(WORK, "scripts", "e2e", "notify-recorder.ts")}`,
+      log: notifyLog,
+    }))
     const ctx: CheckContext = { runtime, plugin, repo: WORK, home, out: OUT, exitCode: run.code, stdout: run.stdout, stderr: run.stderr }
     const checks = [...(await genericChecks(runtime, plugin, ctx, { notifyLog, installed })), ...(await runChecks(spec.checks, ctx))]
     const status = checks.every((check) => check.ok) ? "pass" : "fail"

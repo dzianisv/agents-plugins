@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { discoverPlugins, formatTable, parseArgs, parseResult, type CaseResult } from "../run"
+import { discoverPlugins, formatTable, parseArgs, parseResult, runtimesFor, type CaseResult } from "../run"
+import type { Spec } from "../spec"
 
 describe("parseArgs", () => {
   test("defaults to every available plugin and both runtimes", () => {
@@ -109,5 +110,14 @@ describe("discoverPlugins", () => {
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }
+  })
+})
+
+describe("runtimesFor", () => {
+  const spec: Spec = { plugin: "p", runtimes: ["opencode"], prompt: "hi", checks: [{ name: "c", run: () => ({ ok: true }) }] }
+
+  test("keeps only the runtimes the spec declares", () => {
+    expect(runtimesFor(spec, ["claude", "opencode"])).toEqual(["opencode"])
+    expect(runtimesFor(spec, ["claude"])).toEqual([])
   })
 })

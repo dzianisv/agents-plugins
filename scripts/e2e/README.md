@@ -14,7 +14,7 @@ bun scripts/e2e/run.ts --plugin task-gh-guard --plugin turn-check --runtime all
 | Flag | Meaning |
 | --- | --- |
 | `--plugin <name>` | Run only this plugin; repeatable; defaults to every package with `e2e/spec.ts` |
-| `--runtime claude\|opencode\|all` | Which runtime(s) to run; default `all` |
+| `--runtime claude\|opencode\|all` | Which runtime(s) to run; default `all`; each spec runs only the runtimes it declares |
 | `--timeout <seconds>` | Per-container wall-clock limit; default `300` |
 | `--keep` | Keep the out dir (result JSONs and container output) and print its path |
 | `--no-build` | Use the existing image even when the Dockerfile hash changed |
@@ -61,7 +61,7 @@ The runtime environment also gets `AGENTS_NOTIFY_CMD=bun …/notify-recorder.ts`
 | Claude Code | auth | `~/.claude/.credentials.json` | `security find-generic-password -s "Claude Code-credentials" -w` on macOS |
 | Claude Code | not emitted | `SessionEnd` hook events are never emitted by headless `claude -p` runs | `turn-check` declares it, the driver skips it |
 | opencode | plugin loaded | `$HOME/.local/share/opencode/log/opencode.log` | `msg="loading plugin" id=<plugin dir> entrypoint=file://<plugin dir>/server.ts` |
-| opencode | no plugin error | same log | no `level=ERROR` line mentioning the plugin dir |
+| opencode | no plugin error | same log | no `level=ERROR` and no `message="failed to load plugin"` line mentioning the plugin dir (a bad v2 default export fails at WARN) |
 | opencode | v2 entry only | same log | opencode 2.0.29 loads `server.ts`, never the v1 `src/opencode/plugin.ts` |
 | opencode | auth | minimal `opencode.json` provider block | `opencode models` resolves `fireworks-ai/…` |
 
@@ -87,6 +87,7 @@ export default defineSpec({
   runtimes: ["claude", "opencode"],
   prompt: "Reply with the single word OK.",
   claude: { maxTurns: 2, allowedTools: ["Bash(git commit:*)"] }, // optional
+  env: { OPENCODE_SESSION_INDEX_IDLE_MS: "5000" }, // optional runtime env; the notify vars win
   setup: (ctx) => { /* prepare container state; return the runtime cwd */ },
   checks: [{ name: "audit logged a verdict", run: (ctx) => ({ ok: true }) }],
 })

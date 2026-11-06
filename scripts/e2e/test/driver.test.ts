@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { redact, streamEvents, tail } from "../driver"
+import { redact, runtimeEnv, streamEvents, tail } from "../driver"
+import type { Spec } from "../spec"
 
 describe("streamEvents", () => {
   test("parses JSON lines and skips everything else", () => {
@@ -39,5 +40,22 @@ describe("tail", () => {
 
   test("joins parts and drops empty ones", () => {
     expect(tail("a", "", "b")).toBe("a\nb")
+  })
+})
+
+describe("runtimeEnv", () => {
+  const notify = { cmd: "bun recorder.ts", log: "/out/notify.log" }
+  const spec: Spec = { plugin: "p", runtimes: ["opencode"], prompt: "hi", checks: [], env: { OPENCODE_SESSION_INDEX_IDLE_MS: "5000" } }
+
+  test("layers the spec env over the base", () => {
+    const env = runtimeEnv(spec, { HOME: "/home/node", OPENCODE_SESSION_INDEX_IDLE_MS: "600000" }, notify)
+    expect(env.HOME).toBe("/home/node")
+    expect(env.OPENCODE_SESSION_INDEX_IDLE_MS).toBe("5000")
+  })
+
+  test("the notify recorder cannot be overridden", () => {
+    const env = runtimeEnv({ ...spec, env: { AGENTS_NOTIFY_CMD: "echo bad", E2E_NOTIFY_LOG: "/bad" } }, {}, notify)
+    expect(env.AGENTS_NOTIFY_CMD).toBe("bun recorder.ts")
+    expect(env.E2E_NOTIFY_LOG).toBe("/out/notify.log")
   })
 })

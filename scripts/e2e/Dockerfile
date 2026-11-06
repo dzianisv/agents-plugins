@@ -6,7 +6,7 @@ ARG OPENCODE_VERSION=2.0.29
 ARG CLAUDE_CODE_VERSION=2.1.283
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git jq unzip \
+ && apt-get install -y --no-install-recommends ca-certificates curl git jq unzip python3 \
  && rm -rf /var/lib/apt/lists/*
 
 # bun into /usr/local so the plugin hooks and the entrypoint find it on PATH.

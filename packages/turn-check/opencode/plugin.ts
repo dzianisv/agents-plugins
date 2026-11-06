@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { notify } from "./notify"
 import { attachFeedback, auditorSystem, DEFAULT_MODEL, formatFeedback, hasAgentWork, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel, parseVerdict, pruneAuditLines, renderTranscript } from "./core"
 
 const logDir = () => process.env.SUPERVISOR_HOME || join(homedir(), ".cache", "supervisor")
@@ -27,8 +28,10 @@ export const Supervisor: Plugin = async ({ client }) => {
   const injected = new Map<string, { messageID: string; feedback: string }>()
   const auditing = new Set<string>()
 
-  const log = (level: "info" | "error", message: string) =>
-    client.app.log({ body: { service: "supervisor", level, message } }).catch(() => {})
+  const log = (level: "info" | "error", message: string) => {
+    if (level === "error") void notify("turn-check", message, { client })
+    return client.app.log({ body: { service: "supervisor", level, message } }).catch(() => {})
+  }
 
   const ensureLogDir = () => {
     mkdirSync(logDir(), { recursive: true, mode: 0o700 })
@@ -135,6 +138,7 @@ export const Supervisor: Plugin = async ({ client }) => {
     const verdict = parseVerdict(reply)
     if (!verdict) {
       record({ sessionID, messageID: last.info.id, ...meta, error: "unparseable verdict", reply: reply.slice(0, 300) })
+      log("error", `audit failed: unparseable verdict ${JSON.stringify(reply.slice(0, 80))} ${meta.error !== "null" ? meta.error : ""}`)
       return
     }
     audited.set(sessionID, last.info.id)

@@ -324,7 +324,13 @@ class Env(unittest.TestCase):
         self.store = root / "sessions.json"
         self.store.write_text("[]", encoding="utf-8")
         write_transcript(self.transcript, [user("fix it", "u1"), assistant([text("done, here is a long answer")], "a1")])
+        recorder = root / "notify.sh"
+        self.notified = root / "notified.txt"
+        recorder.write_text(f'#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> "{self.notified}"\n', encoding="utf-8")
+        recorder.chmod(0o755)
         patcher = mock.patch.dict(os.environ, {
+            "AGENTS_NOTIFY_CMD": str(recorder),
+            "AGENTS_NOTIFY_STATE_DIR": str(root / "notify-state"),
             "SUPERVISOR_HOME": str(self.home),
             "SUPERVISOR_RULES": str(self.rules),
             "SUPERVISOR_SETTLE_SECONDS": "0",
@@ -462,6 +468,13 @@ class AuditOnceTest(Env):
         self.assertEqual(audit.audit_once("s1", str(self.transcript)), "error")
         self.assertIn("opencode exited 2: unknown flag", self.audits()[0]["error"])
         self.assertIn("turn-check ERROR:", state.pending_path("s1").read_text())
+
+    def test_audit_error_raises_a_notification(self):
+        os.environ["FAKE_MODE"] = "exit2"
+        audit.audit_once("s1", str(self.transcript))
+        title, _, message = self.notified.read_text().strip().partition("|")
+        self.assertEqual(title, "turn-check")
+        self.assertIn("audit failed: opencode exited 2", message)
 
     def test_repeated_errors_leave_one_error_note(self):
         os.environ["FAKE_MODE"] = "exit2"
@@ -927,7 +940,7 @@ class HooksFileTest(unittest.TestCase):
 
     def test_plugin_manifest(self):
         manifest = json.loads((CLAUDE.parent / ".claude-plugin" / "plugin.json").read_text())
-        self.assertEqual((manifest["name"], manifest["version"]), ("turn-check", "0.5.1"))
+        self.assertEqual((manifest["name"], manifest["version"]), ("turn-check", "0.5.2"))
         self.assertEqual(manifest["author"], {"name": "Dzianis Vashchuk"})
 
 

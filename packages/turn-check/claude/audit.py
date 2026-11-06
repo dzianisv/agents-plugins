@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import core
+import notify
 import state
 
 AGENT = "claude-code"
@@ -170,6 +171,7 @@ def run_judge(prompt: str, model: str, timeout: float) -> str:
 def fail_loudly(session_id: str, base: dict, started: float, error: str, **extra) -> str:
     """Log the error and leave a note for the next prompt, so a broken judge is never silent."""
     state.record({**base, "ms": int((time.time() - started) * 1000), "error": error, **extra})
+    notify.notify("turn-check", f"audit failed: {error}")
     path = state.pending_path(session_id)
     try:
         kept = [l for l in path.read_text(encoding="utf-8").splitlines() if not l.startswith(core.ERROR_PREFIX)]
@@ -231,6 +233,7 @@ def run(session_id: str, transcript_path: str) -> None:
             audit_once(session_id, transcript_path)
         except Exception as exc:  # noqa: BLE001
             state.record({"agent": AGENT, "sessionID": session_id, "error": f"audit crashed: {exc}"[:300]})
+            notify.notify("turn-check", f"audit crashed: {exc}")
         state.release_lock(session_id)
         if not state.take_rerun(session_id) or not state.acquire_lock(session_id):
             return

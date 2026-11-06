@@ -17,10 +17,11 @@ from common import (
     state_path,
     write_state,
 )
+from notify import notify
 
 
 def gate(state: Path):
-    """Run the shared checker; None when it cannot answer."""
+    """Run the shared checker; None when it passes or cannot answer (a failed run is reported loudly)."""
     try:
         proc = subprocess.run(
             [sys.executable, str(BIN), "--state", str(state), "--json"],
@@ -29,13 +30,18 @@ def gate(state: Path):
             text=True,
             timeout=100,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        notify("task-gh-guard", f"CI check could not run: {exc}")
+        return None
+    if proc.returncode == 0:
         return None
     if proc.returncode not in (1, 2):
+        notify("task-gh-guard", f"CI check exited {proc.returncode}: {(proc.stderr or '').strip()[:120]}")
         return None
     try:
         result = json.loads(proc.stdout)
     except ValueError:
+        notify("task-gh-guard", "CI check printed no readable result")
         return None
     return result if isinstance(result, dict) else None
 
@@ -79,6 +85,9 @@ def main() -> int:
     result = gate(state)
     if not result or result.get("status") not in {"fail", "pending"}:
         return 0
+    for entry in result.get("entries") or []:
+        if entry.get("error"):
+            notify("task-gh-guard", f"CI check could not read {entry.get('branch')}@{str(entry.get('sha'))[:7]}: {entry['error']}")
     if data.get("stop_hook_active"):
         return 0  # one block per turn; the state file survives for the next turn
     now = int(time.time())

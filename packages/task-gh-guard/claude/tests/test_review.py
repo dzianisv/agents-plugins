@@ -28,6 +28,10 @@ class ReviewTest(unittest.TestCase):
         shutil.copy2(FAKE, bindir / "opencode")
         self.home = self.tmp / "home"
         self.log = self.tmp / "opencode.log"
+        recorder = self.tmp / "notify.sh"
+        self.notified = self.tmp / "notified.txt"
+        recorder.write_text(f'#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> "{self.notified}"\n')
+        recorder.chmod(0o755)
         self.env = {
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -35,6 +39,8 @@ class ReviewTest(unittest.TestCase):
             "TASK_GH_GUARD_HOME": str(self.home),
             "TASK_GH_GUARD_STATE_DIR": str(self.tmp / "state"),
             "FAKE_OPENCODE_LOG": str(self.log),
+            "AGENTS_NOTIFY_CMD": str(recorder),
+            "AGENTS_NOTIFY_STATE_DIR": str(self.tmp / "notify-state"),
         }
         self.env.pop("TASK_GH_GUARD_CHILD", None)
         self.env.pop("TASK_GH_GUARD_REVIEW", None)
@@ -108,6 +114,9 @@ class ReviewTest(unittest.TestCase):
         out = json.loads(subprocess.run([sys.executable, str(HOOK)], input=payload, env=env, capture_output=True, text=True).stdout)
         self.assertIn("rule review skipped", out["systemMessage"])
         self.assertIn("tell the user", out["hookSpecificOutput"]["additionalContext"])
+        title, _, message = self.notified.read_text().strip().partition("|")
+        self.assertEqual(title, "task-gh-guard")
+        self.assertIn("rule review skipped", message)
 
     def test_hook_is_silent_for_other_commands_and_allowed_writes(self):
         for command, reply in [("ls", "DENY: x"), (REPLY, "ALLOW")]:

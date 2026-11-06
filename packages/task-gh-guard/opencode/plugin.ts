@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { existsSync, rmSync } from "node:fs"
+import { notify } from "./notify"
 import {
   bumpNudge,
   feedback,
@@ -23,8 +24,10 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
   const nudges: Nudges = {}
   const running = new Set<string>()
 
-  const log = (level: "info" | "error", message: string) =>
-    client.app.log({ body: { service: "task-gh-guard", level, message } }).catch(() => {})
+  const log = (level: "info" | "error", message: string) => {
+    if (level === "error") void notify("task-gh-guard", message, { client })
+    return client.app.log({ body: { service: "task-gh-guard", level, message } }).catch(() => {})
+  }
 
   const nudge = async (sessionID: string, result: Gate) => {
     const kind = result.status === "fail" ? "fail" : "pending"
@@ -70,6 +73,7 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
         const info = await client.session.get({ path: { id: sessionID } }).catch(() => undefined)
         if (info?.data?.parentID) return
         const result = await gate(file)
+        if (result.error) log("error", `CI check could not run: ${result.error}`)
         if (result.status === "pass") {
           rmSync(file, { force: true })
           return

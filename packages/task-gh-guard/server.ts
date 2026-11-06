@@ -2,6 +2,7 @@ import { existsSync } from "node:fs"
 import { bumpNudge, nudgeAllowed, nudgeKey, nudgeText, type Nudges } from "./src/core/feedback"
 import { gate, record } from "./src/core/gate"
 import { isPushCommand } from "./src/core/push"
+import { reviewCommand } from "./src/core/review"
 import { statePath } from "./src/core/state"
 import { notify } from "./src/shared/notify"
 
@@ -21,7 +22,17 @@ export default {
 
     const nudges: Nudges = {}
     const running = new Set<string>()
-    const log = (message: string) => void notify("task-gh-guard", message)
+    const log = (message: string) => notify("task-gh-guard", message)
+
+    // The v2 event carries the tool args on `input`; a throw blocks the call and the message reaches the model.
+    await ctx.tool.hook("execute.before", async (event: any) => {
+      if (!TOOLS.has(String(event?.tool ?? ""))) return event
+      const command = event?.input?.command
+      if (typeof command !== "string") return event
+      const warning = await reviewCommand(command)
+      if (warning) await log(warning)
+      return event
+    })
 
     // v2 runs the shell tool as "shell"; v1 calls it "bash".
     await ctx.tool.hook("execute.after", async (event: any) => {

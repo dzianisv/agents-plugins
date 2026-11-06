@@ -218,6 +218,13 @@ function log(entry: Record<string, unknown>, env: NodeJS.ProcessEnv): void {
   } catch {}
 }
 
+/** Reviews one command for a tool hook: throws the deny message, returns the skip warning to notify, else null. */
+export async function reviewCommand(command: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  const verdict = await check(command, env)
+  if (verdict.decision === "deny") throw new Error(`task-gh-guard rules: ${verdict.reason}`)
+  return verdict.reason.startsWith("rule review skipped") ? verdict.reason : null
+}
+
 /** Reviews one command; a broken review fails open with a `rule review skipped` reason. */
 export async function check(command: string, env: NodeJS.ProcessEnv = process.env): Promise<Review> {
   try {

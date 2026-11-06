@@ -561,25 +561,27 @@ describe("review hook", () => {
   })
 })
 
+// The process env both opencode plugin tests read directly.
+const pluginEnv = (): NodeJS.ProcessEnv => ({
+  PATH: env.PATH,
+  HOME: env.HOME,
+  FAKE_GH_DIR: ghDir,
+  FAKE_GH_LOG: ghLog,
+  FAKE_OPENCODE_REPLY: "ALLOW",
+  TASK_GH_GUARD_HOME: homeDir,
+  TASK_GH_GUARD_STATE_DIR: stateDir,
+  TASK_GH_GUARD_ENABLED: "1",
+  TASK_GH_GUARD_REVIEW: "1",
+  TASK_GH_GUARD_CHILD: "",
+  AGENTS_NOTIFY_CMD: "true",
+  AGENTS_NOTIFY_STATE_DIR: join(tmp, "notify-state"),
+})
+
 describe("opencode v1 plugin", () => {
   const client = () => ({
     app: { log: async () => ({}) },
     tui: { showToast: async () => {} },
     session: { get: async () => ({ data: {} }), prompt: async () => ({}) },
-  })
-  const pluginEnv = (): NodeJS.ProcessEnv => ({
-    PATH: env.PATH,
-    HOME: env.HOME,
-    FAKE_GH_DIR: ghDir,
-    FAKE_GH_LOG: ghLog,
-    FAKE_OPENCODE_REPLY: "ALLOW",
-    TASK_GH_GUARD_HOME: homeDir,
-    TASK_GH_GUARD_STATE_DIR: stateDir,
-    TASK_GH_GUARD_ENABLED: "1",
-    TASK_GH_GUARD_REVIEW: "1",
-    TASK_GH_GUARD_CHILD: "",
-    AGENTS_NOTIFY_CMD: "true",
-    AGENTS_NOTIFY_STATE_DIR: join(tmp, "notify-state"),
   })
 
   test("records a push from the tool hooks with the directory as cwd", async () => {
@@ -610,6 +612,87 @@ describe("opencode v1 plugin", () => {
           { args: { command: "gh pr comment 3 -b hi" } },
         ),
       ).rejects.toThrow("task-gh-guard rules: no commit id.")
+    })
+  })
+})
+
+describe("opencode v2 server", () => {
+  type Hook = (event: any) => Promise<any>
+
+  const fakeCtx = () => {
+    const hooks = new Map<string, Hook>()
+    const ctx = {
+      location: { directory: repo },
+      tool: {
+        hook: async (name: string, fn: Hook) => {
+          hooks.set(name, fn)
+        },
+      },
+      event: {
+        subscribe: async function* (options: { signal?: AbortSignal }) {
+          await new Promise<void>((resolve) => {
+            if (options?.signal?.aborted) resolve()
+            else options?.signal?.addEventListener("abort", () => resolve(), { once: true })
+          })
+        },
+      },
+      session: { get: async () => undefined },
+    }
+    return { ctx, hooks }
+  }
+
+  const setup = async () => {
+    const { ctx, hooks } = fakeCtx()
+    const dispose = (await (await import("../server")).default.setup(ctx)) as (() => void) | undefined
+    return { hooks, dispose }
+  }
+
+  test("denies a write with the rule reason", async () => {
+    await withProcessEnv({ ...pluginEnv(), FAKE_OPENCODE_REPLY: "DENY: no commit id." }, async () => {
+      const { hooks, dispose } = await setup()
+      const before = hooks.get("execute.before")!
+      await expect(before({ tool: "shell", sessionID: "s1", input: { command: "gh pr comment 3 -b hi" } })).rejects.toThrow(
+        "task-gh-guard rules: no commit id.",
+      )
+      dispose?.()
+    })
+  })
+
+  test("allows a write and returns the event", async () => {
+    await withProcessEnv(pluginEnv(), async () => {
+      const { hooks, dispose } = await setup()
+      const before = hooks.get("execute.before")!
+      const event = { tool: "shell", sessionID: "s1", input: { command: 'git commit -m "msg"' } }
+      await expect(before(event)).resolves.toBe(event)
+      dispose?.()
+    })
+  })
+
+  test("notifies when the review was skipped", async () => {
+    const notified = join(tmp, "notified-v2.txt")
+    const recorder = join(tmp, "notify-v2.sh")
+    writeFileSync(recorder, `#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> "${notified}"\n`)
+    chmodSync(recorder, 0o755)
+    await withProcessEnv({ ...pluginEnv(), FAKE_OPENCODE_REPLY: "no idea", AGENTS_NOTIFY_CMD: recorder }, async () => {
+      const { hooks, dispose } = await setup()
+      const before = hooks.get("execute.before")!
+      await before({ tool: "shell", sessionID: "s1", input: { command: 'git commit -m "msg"' } })
+      const [title, message] = readFileSync(notified, "utf8").trim().split("|")
+      expect(title).toBe("task-gh-guard")
+      expect(message).toContain("rule review skipped")
+      dispose?.()
+    })
+  })
+
+  test("ignores other tools and commands without text", async () => {
+    await withProcessEnv({ ...pluginEnv(), FAKE_OPENCODE_REPLY: "DENY: x" }, async () => {
+      const { hooks, dispose } = await setup()
+      const before = hooks.get("execute.before")!
+      const other = { tool: "read", sessionID: "s1", input: { command: 'git commit -m "msg"' } }
+      await expect(before(other)).resolves.toBe(other)
+      const empty = { tool: "shell", sessionID: "s1", input: {} }
+      await expect(before(empty)).resolves.toBe(empty)
+      dispose?.()
     })
   })
 })

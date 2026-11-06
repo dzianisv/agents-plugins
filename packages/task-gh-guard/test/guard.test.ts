@@ -19,6 +19,7 @@ import {
   nudgeAllowed,
   nudgeKey,
   record,
+  review,
   stateFile,
 } from "../opencode/core"
 import type { Entry, Nudges } from "../opencode/core"
@@ -234,5 +235,23 @@ describe("feedback", () => {
     expect(feedback({ status: "fail", message: "CI failed on x", entries: [] })).toContain(
       "Fix the failing check or report it as a known failure",
     )
+  })
+})
+
+describe("review", () => {
+  const reply = "gh api repos/o/r/pulls/1/comments/9/replies -f body='Thanks, fixed.'"
+
+  test("a deny verdict from the judge comes back with its reason", async () => {
+    copyFileSync(join(packageDir, "test", "fixtures", "fake-opencode"), join(tmp, "bin", "opencode"))
+    chmodSync(join(tmp, "bin", "opencode"), 0o755)
+    process.env.TASK_GH_GUARD_HOME = join(tmp, "home")
+    process.env.FAKE_OPENCODE_REPLY = "DENY: no commit id."
+    try {
+      expect(await review(reply)).toEqual({ decision: "deny", reason: "no commit id." })
+      expect((await review("git status")).decision).toBe("skip")
+    } finally {
+      delete process.env.TASK_GH_GUARD_HOME
+      delete process.env.FAKE_OPENCODE_REPLY
+    }
   })
 })

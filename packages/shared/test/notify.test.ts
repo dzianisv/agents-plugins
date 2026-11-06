@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { notify } from "./notify"
+import { notify } from "../src/notify"
 
 let log: string
 const keys = ["AGENTS_NOTIFY", "AGENTS_NOTIFY_CMD", "AGENTS_NOTIFY_STATE_DIR", "AGENTS_NOTIFY_WINDOW"]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Detached audit child started by the Stop hook: judge the transcript with `opencode run --pure`."""
+"""Detached audit child started by the Stop hook: judge the transcript with `opencode run`."""
 
 import json
 import os
@@ -111,13 +111,13 @@ def run_cli(args: list, env: dict, cwd: str, timeout: float) -> str:
 
 def delete_session(session_id: str, env: dict, cwd: str) -> None:
     """Delete one opencode session, ignoring failure."""
-    run_cli(["session", "delete", session_id, "--pure"], env, cwd, CLEANUP_TIMEOUT)
+    run_cli(["session", "delete", session_id], env, cwd, CLEANUP_TIMEOUT)
 
 
 def find_audit_sessions(workdir: str, started_ms: int, env: dict) -> list:
     """Ids of sessions titled exactly AUDIT_TITLE, created after started_ms in this run's directory, newest first."""
     try:
-        sessions = json.loads(run_cli(["session", "list", "--format", "json", "-n", "50", "--pure"], env, workdir, CLEANUP_TIMEOUT) or "[]")
+        sessions = json.loads(run_cli(["session", "list", "--format", "json", "-n", "50"], env, workdir, CLEANUP_TIMEOUT) or "[]")
     except ValueError:
         return []
     wanted = os.path.realpath(workdir)
@@ -134,25 +134,28 @@ def run_judge(prompt: str, model: str, timeout: float) -> str:
     """Run opencode as the judge in its own process group, send the prompt on stdin, return its reply text and delete its saved session."""
     workdir = tempfile.mkdtemp(prefix="supervisor-")
     env = {**os.environ, "OPENCODE_CONFIG_CONTENT": JUDGE_CONFIG, "SUPERVISOR_ENABLED": "0", "SUPERVISOR_CHILD": "1"}
-    cmd = ["opencode", "run", "--pure", "--format", "json", "--title", AUDIT_TITLE, "--dir", workdir, "--model", model]
+    cmd = ["opencode", "run", "--format", "json", "--title", AUDIT_TITLE, "--model", model]
     started_ms = int(time.time() * 1000)
     stdout = ""
     try:
         try:
             proc = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                env=env, start_new_session=True, text=True, errors="replace",
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=env, cwd=workdir, start_new_session=True, text=True, errors="replace",
             )
         except OSError as exc:
             raise JudgeError(f"could not start opencode: {exc}")
         try:
-            stdout, _ = proc.communicate(input=prompt, timeout=timeout)
+            stdout, stderr = proc.communicate(input=prompt, timeout=timeout)
         except subprocess.TimeoutExpired:
             kill_group(proc.pid)
             stdout, _ = proc.communicate()
             raise JudgeError(f"judge timed out after {timeout:g}s")
         finally:
             kill_group(proc.pid)
+        if proc.returncode != 0:
+            detail = " ".join((stderr or stdout or "").split())[:200]
+            raise JudgeError(f"opencode exited {proc.returncode}: {detail}")
         return reply_from_events(stdout)
     finally:
         try:
@@ -162,6 +165,18 @@ def run_judge(prompt: str, model: str, timeout: float) -> str:
         except Exception:  # noqa: BLE001
             pass
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def fail_loudly(session_id: str, base: dict, started: float, error: str, **extra) -> str:
+    """Log the error and leave a note for the next prompt, so a broken judge is never silent."""
+    state.record({**base, "ms": int((time.time() - started) * 1000), "error": error, **extra})
+    path = state.pending_path(session_id)
+    try:
+        kept = [l for l in path.read_text(encoding="utf-8").splitlines() if not l.startswith(core.ERROR_PREFIX)]
+    except OSError:
+        kept = []
+    state.write_atomic(path, "\n".join([*kept, core.format_error(error)]))
+    return "error"
 
 
 def audit_once(session_id: str, transcript_path: str) -> str:
@@ -182,21 +197,18 @@ def audit_once(session_id: str, transcript_path: str) -> str:
     try:
         rules = rules_path.read_text(encoding="utf-8")
     except OSError as exc:
-        state.record({**base, "error": f"rules unreadable: {exc.strerror or exc}"})
-        return "error"
+        return fail_loudly(session_id, base, started, f"rules unreadable: {exc.strerror or exc}")
 
     max_chars = int(os.environ.get("SUPERVISOR_MAX_CHARS") or 60000)
     prompt = core.build_prompt(rules, msgs, max_chars)
     try:
         reply = run_judge(prompt, model, float(os.environ.get("SUPERVISOR_JUDGE_TIMEOUT") or DEFAULT_JUDGE_TIMEOUT))
     except JudgeError as exc:
-        state.record({**base, "ms": int((time.time() - started) * 1000), "error": str(exc)})
-        return "error"
+        return fail_loudly(session_id, base, started, str(exc))
 
     verdict = core.parse_verdict(reply)
     if verdict is None:
-        state.record({**base, "ms": int((time.time() - started) * 1000), "error": "unparseable verdict", "reply": reply[:300]})
-        return "error"
+        return fail_loudly(session_id, base, started, f"unparseable verdict: {reply[:160]!r}", reply=reply[:300])
 
     state.mark_audited(session_id, message_id)
     state.record({**base, "ms": int((time.time() - started) * 1000), **verdict})

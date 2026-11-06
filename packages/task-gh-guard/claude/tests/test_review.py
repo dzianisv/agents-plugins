@@ -102,6 +102,13 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(out["permissionDecision"], "deny")
         self.assertIn("no commit id.", out["permissionDecisionReason"])
 
+    def test_hook_warns_loudly_when_the_judge_cannot_run(self):
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": REPLY}})
+        env = {**self.env, "FAKE_OPENCODE_REPLY": "no idea"}
+        out = json.loads(subprocess.run([sys.executable, str(HOOK)], input=payload, env=env, capture_output=True, text=True).stdout)
+        self.assertIn("rule review skipped", out["systemMessage"])
+        self.assertIn("tell the user", out["hookSpecificOutput"]["additionalContext"])
+
     def test_hook_is_silent_for_other_commands_and_allowed_writes(self):
         for command, reply in [("ls", "DENY: x"), (REPLY, "ALLOW")]:
             payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})

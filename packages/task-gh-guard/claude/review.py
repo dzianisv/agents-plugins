@@ -31,7 +31,8 @@ def main() -> int:
             "permissionDecisionReason": f"task-gh-guard rules: {verdict.get('reason')}",
         }}))
     elif verdict.get("decision") == "skip" and str(verdict.get("reason", "")).startswith("rule review skipped"):
-        print(json.dumps({"systemMessage": f"task-gh-guard: {verdict['reason']}"}))
+        note = f"task-gh-guard: {verdict['reason']}. The git command ran without its rule check; tell the user."
+        print(json.dumps({"systemMessage": note, "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}}))
     return 0
 
 

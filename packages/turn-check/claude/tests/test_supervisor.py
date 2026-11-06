@@ -65,14 +65,14 @@ record({
     "config": os.environ.get("OPENCODE_CONFIG_CONTENT"),
     "enabled": os.environ.get("SUPERVISOR_ENABLED"),
     "child": os.environ.get("SUPERVISOR_CHILD"),
-    "dir_exists": os.path.isdir(args[args.index("--dir") + 1]),
+    "cwd": os.getcwd(),
 })
 sid = "ses_fake_%d" % time.time_ns()
 save(load() + [{
     "id": sid,
     "title": args[args.index("--title") + 1] if "--title" in args else "auto generated title",
     "created": int(time.time() * 1000),
-    "directory": os.path.realpath(args[args.index("--dir") + 1]),
+    "directory": os.path.realpath(os.getcwd()),
 }])
 ids = {} if os.environ.get("FAKE_NO_SESSION_ID") else {"sessionID": sid}
 if mode == "hang":
@@ -80,6 +80,9 @@ if mode == "hang":
     with open(os.environ["FAKE_PIDS"], "w") as fh:
         fh.write(str(child.pid))
     time.sleep(60)
+elif mode == "exit2":
+    sys.stderr.write("unknown flag --bogus\\n")
+    sys.exit(2)
 elif mode == "garbage":
     print("this is not json at all " * 30)
 elif mode == "error":
@@ -404,12 +407,12 @@ class AuditOnceTest(Env):
         audit.audit_once("s1", str(self.transcript))
         (call,) = self.calls()
         argv = call["argv"]
-        self.assertEqual(argv[:3], ["run", "--pure", "--format"])
+        self.assertEqual(argv[:3], ["run", "--format", "json"])
+        self.assertNotIn("--pure", argv)
+        self.assertNotIn("--dir", argv)
         self.assertEqual(argv[argv.index("--format") + 1], "json")
         self.assertEqual(argv[argv.index("--model") + 1], "prov/some/model")
-        workdir = argv[argv.index("--dir") + 1]
-        self.assertTrue(call["dir_exists"])
-        self.assertFalse(os.path.exists(workdir))
+        self.assertFalse(os.path.exists(call["cwd"]))
         self.assertEqual(json.loads(call["config"]), {"permission": {"*": "deny"}})
         self.assertEqual((call["enabled"], call["child"]), ("0", "1"))
         sent = call["stdin"]
@@ -438,9 +441,11 @@ class AuditOnceTest(Env):
         state.write_atomic(state.pending_path("s1"), "keep me")
         self.assertEqual(audit.audit_once("s1", str(self.transcript)), "error")
         self.assertEqual(state.last_audited("s1"), "")
-        self.assertEqual(state.pending_path("s1").read_text(), "keep me")
+        pending = state.pending_path("s1").read_text()
+        self.assertTrue(pending.startswith("keep me\nturn-check ERROR:"))
+        self.assertIn("unparseable verdict", pending)
         (entry,) = self.audits()
-        self.assertEqual(entry["error"], "unparseable verdict")
+        self.assertTrue(entry["error"].startswith("unparseable verdict"))
         self.assertLessEqual(len(entry["reply"]), 300)
         self.assertNotIn("verdict", entry)
         os.environ["FAKE_MODE"] = "reply"
@@ -450,7 +455,19 @@ class AuditOnceTest(Env):
         os.environ["FAKE_REPLY"] = '{"verdict":"FAIL","violations":[]}'
         self.assertEqual(audit.audit_once("s1", str(self.transcript)), "error")
         self.assertEqual(state.last_audited("s1"), "")
-        self.assertFalse(state.pending_path("s1").exists())
+        self.assertTrue(state.pending_path("s1").read_text().startswith("turn-check ERROR:"))
+
+    def test_nonzero_exit_is_a_loud_error_with_stderr(self):
+        os.environ["FAKE_MODE"] = "exit2"
+        self.assertEqual(audit.audit_once("s1", str(self.transcript)), "error")
+        self.assertIn("opencode exited 2: unknown flag", self.audits()[0]["error"])
+        self.assertIn("turn-check ERROR:", state.pending_path("s1").read_text())
+
+    def test_repeated_errors_leave_one_error_note(self):
+        os.environ["FAKE_MODE"] = "exit2"
+        audit.audit_once("s1", str(self.transcript))
+        audit.audit_once("s1", str(self.transcript))
+        self.assertEqual(state.pending_path("s1").read_text().count("turn-check ERROR:"), 1)
 
     def test_error_event_is_logged_and_not_marked(self):
         os.environ["FAKE_MODE"] = "error"
@@ -636,6 +653,12 @@ class PromptHookTest(Env):
         result = self.run_hook("prompt.py", {"session_id": "../a"})
         self.assertIn("hit", result.stdout)
 
+    def test_error_note_is_shown_to_the_user(self):
+        state.write_atomic(state.pending_path("s1"), "turn-check ERROR: the audit of your last turn failed (boom). No rules were checked. Tell the user.")
+        result = json.loads(self.run_hook("prompt.py", {"session_id": "s1"}).stdout)
+        self.assertTrue(result["systemMessage"].startswith("turn-check ERROR:"))
+        self.assertIn("boom", result["hookSpecificOutput"]["additionalContext"])
+
     def test_garbage_stdin_exits_zero_silently(self):
         result = subprocess.run([sys.executable, str(CLAUDE / "prompt.py")], input="{{{", capture_output=True, text=True, env=os.environ.copy(), check=False)
         self.assertEqual((result.returncode, result.stdout), (0, ""))
@@ -726,7 +749,7 @@ class SessionCleanupTest(Env):
         self.assertEqual(audit.audit_once("s1", str(self.transcript)), "pass")
         calls = self.session_calls()
         self.assertEqual([c["argv"][1] for c in calls], ["list", "delete"])
-        self.assertTrue(all("--pure" in c["argv"] for c in calls))
+        self.assertFalse(any("--pure" in c["argv"] for c in calls))
 
     def test_long_prompt_goes_on_stdin_not_in_argv(self):
         long_text = "x" * 300000
@@ -904,7 +927,7 @@ class HooksFileTest(unittest.TestCase):
 
     def test_plugin_manifest(self):
         manifest = json.loads((CLAUDE.parent / ".claude-plugin" / "plugin.json").read_text())
-        self.assertEqual((manifest["name"], manifest["version"]), ("turn-check", "0.5.0"))
+        self.assertEqual((manifest["name"], manifest["version"]), ("turn-check", "0.5.1"))
         self.assertEqual(manifest["author"], {"name": "Dzianis Vashchuk"})
 
 

@@ -249,3 +249,11 @@ def auditor_system(rules: str) -> str:
 
 RULES:
 {rules}"""
+
+
+ERROR_PREFIX = "turn-check ERROR:"
+
+
+def format_error(error: str) -> str:
+    """The note the next prompt carries when the judge could not run."""
+    return f"{ERROR_PREFIX} the audit of your last turn failed ({error}). No rules were checked. Tell the user."

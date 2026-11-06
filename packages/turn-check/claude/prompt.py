@@ -4,6 +4,7 @@
 import json
 import sys
 
+import core
 import state
 
 
@@ -23,8 +24,9 @@ def main() -> int:
     state.remove(path)
     if not feedback:
         return 0
+    failed = next((line for line in feedback.splitlines() if line.startswith(core.ERROR_PREFIX)), "")
     print(json.dumps({
-        "systemMessage": f"supervisor: {count_violations(feedback)} rule violation(s) from your last turn",
+        "systemMessage": failed or f"supervisor: {count_violations(feedback)} rule violation(s) from your last turn",
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": f"<system-reminder>\n{feedback}\n</system-reminder>",

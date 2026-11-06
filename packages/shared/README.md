@@ -6,7 +6,7 @@ opencode loads the package straight from the repo, so both see the same source.
 
 ## notify
 
-`notify(title, message, { client })` prints one line to stderr and raises a desktop notification (`osascript`
+`notify(title, message, { client })` raises a desktop notification (`osascript`
 on macOS, `notify-send` on Linux). With an opencode v1 `client` it also shows a toast. The same message shows
 once per 10 minutes, so a failure that repeats every turn does not spam.
 

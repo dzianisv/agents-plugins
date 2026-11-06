@@ -8,6 +8,8 @@ const rules = join(dir, "AGENTS.md")
 writeFileSync(rules, "Replies max 6 lines.")
 process.env.SUPERVISOR_RULES = rules
 process.env.HOME = dir
+process.env.AGENTS_NOTIFY_CMD = "true"
+process.env.AGENTS_NOTIFY_STATE_DIR = join(dir, "notify")
 process.env.SUPERVISOR_HOME = join(dir, "state")
 const auditLog = join(dir, "state", "audits.jsonl")
 
@@ -138,14 +140,16 @@ test("child sessions are never audited", async () => {
   expect(calls.created).toHaveLength(0)
 })
 
-test("an unparseable reply is ignored without throwing, and the same state is retried on the next idle", async () => {
+test("an unparseable reply raises an error toast without throwing, and the same state is retried on the next idle", async () => {
   const pass = '{"verdict":"PASS","violations":[]}'
   const { client, calls } = fakeClient({ replies: ["looks fine to me", pass] })
   const hooks: any = await Supervisor({ client } as any)
   const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "s3" } } })
   await idle()
   await waitFor(() => calls.deleted.length === 1)
-  expect(calls.toast).toHaveLength(0)
+  await waitFor(() => calls.toast.length > 0)
+  expect(calls.toast[0].body).toMatchObject({ title: "turn-check", variant: "error" })
+  expect(calls.toast[0].body.message).toContain("unparseable verdict")
   await idle()
   await waitFor(() => calls.deleted.length === 2)
   expect(calls.prompt).toHaveLength(2)
@@ -349,7 +353,9 @@ test("a hung judge is aborted at the timeout, its session deleted, and the turn 
     expect(calls.aborted).toEqual(["audit1"])
     await waitFor(() => calls.deleted.length > 0)
     expect(calls.deleted).toEqual(["audit1"])
-    expect(calls.toast).toHaveLength(0)
+    await waitFor(() => calls.toast.length > 0)
+    expect(calls.toast[0].body).toMatchObject({ variant: "error" })
+    expect(calls.toast[0].body.message).toContain("judge timed out")
     await idle()
     await waitFor(() => calls.deleted.length === 2)
     expect(calls.prompt).toHaveLength(2)

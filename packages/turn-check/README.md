@@ -5,6 +5,12 @@ and `~/.agents/AGENTS.md`, then lists the rules the agent broke, with quotes. Th
 as a note on your next message. opencode also shows a toast.
 Design and limits: [DESIGN.md](DESIGN.md).
 
+## When it cannot run
+
+A failed audit (judge exits non-zero, times out, or returns no verdict) raises a desktop notification
+and, in opencode, an error toast, through `packages/shared/notify`. In Claude Code the next prompt also
+carries a `turn-check ERROR:` note. `AGENTS_NOTIFY=0` turns the notification off.
+
 ## Install
 
 Claude Code (needs `python3` and the `opencode` CLI on PATH, the audit runs through it). After any change, bump `version` in `.claude-plugin/plugin.json` and run `claude plugin update turn-check@agents-plugins`:

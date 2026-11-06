@@ -87,6 +87,8 @@ beforeEach(() => {
   process.env.FAKE_GH_DIR = ghDir
   process.env.FAKE_GH_LOG = ghLog
   process.env.TASK_GH_GUARD_STATE_DIR = join(tmp, "state")
+  process.env.AGENTS_NOTIFY_CMD = "true"
+  process.env.AGENTS_NOTIFY_STATE_DIR = join(tmp, "notify-state")
   process.env.GIT_CONFIG_GLOBAL = join(tmp, "gitconfig")
   scenario({})
 })

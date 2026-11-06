@@ -49,6 +49,8 @@ class GuardTest(unittest.TestCase):
             "FAKE_GH_DIR": str(self.gh_dir),
             "FAKE_GH_LOG": str(self.gh_log),
             "TASK_GH_GUARD_STATE_DIR": str(self.state_dir),
+            "AGENTS_NOTIFY_CMD": "true",
+            "AGENTS_NOTIFY_STATE_DIR": str(self.tmp / "notify-state"),
             "GIT_CONFIG_GLOBAL": str(self.config),
         }
         self.scenario({})

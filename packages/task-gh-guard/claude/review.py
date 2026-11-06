@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from common import read_hook_input
+from notify import notify
 
 REVIEW = Path(__file__).resolve().parent.parent / "bin" / "git-rules-review"
 
@@ -31,6 +32,7 @@ def main() -> int:
             "permissionDecisionReason": f"task-gh-guard rules: {verdict.get('reason')}",
         }}))
     elif verdict.get("decision") == "skip" and str(verdict.get("reason", "")).startswith("rule review skipped"):
+        notify("task-gh-guard", verdict["reason"])
         note = f"task-gh-guard: {verdict['reason']}. The git command ran without its rule check; tell the user."
         print(json.dumps({"systemMessage": note, "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}}))
     return 0

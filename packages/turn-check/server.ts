@@ -1,6 +1,7 @@
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { notify } from "./opencode/notify"
 import {
   auditorSystem,
   DEFAULT_MODEL,
@@ -89,6 +90,7 @@ export default {
     const injected = new Map<string, { messageID: string; feedback: string }>()
 
     const log = (message: string) => console.error(`[supervisor] ${message}`)
+    const fail = (message: string) => void notify("turn-check", message)
 
     const ensureLogDir = () => {
       mkdirSync(logDir(), { recursive: true, mode: 0o700 })
@@ -159,6 +161,7 @@ export default {
       const verdict = parseVerdict(reply)
       if (!verdict) {
         record({ sessionID, messageID: last.info.id, ms: Date.now() - started, error: "unparseable verdict", reply: reply.slice(0, 300) })
+        fail(`audit failed: unparseable verdict ${JSON.stringify(reply.slice(0, 80))}`)
         return
       }
       audited.set(sessionID, last.info.id)
@@ -175,7 +178,10 @@ export default {
     const run = (id: string): void => {
       running.add(id)
       audit(id)
-        .catch((err) => log(`audit failed: ${err instanceof Error ? err.message : String(err)}`))
+        .catch((err) => {
+          log(`audit failed: ${err instanceof Error ? err.message : String(err)}`)
+          fail(`audit failed: ${err instanceof Error ? err.message : String(err)}`)
+        })
         .finally(() => {
           running.delete(id)
           if (rerun.delete(id)) run(id)

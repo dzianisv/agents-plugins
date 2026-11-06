@@ -8,6 +8,8 @@ const rules = join(dir, "AGENTS.md")
 writeFileSync(rules, "Replies max 6 lines.")
 process.env.SUPERVISOR_RULES = rules
 process.env.SUPERVISOR_HOME = join(dir, "state")
+process.env.AGENTS_NOTIFY_CMD = "true"
+process.env.AGENTS_NOTIFY_STATE_DIR = join(dir, "notify")
 const auditLog = join(dir, "state", "audits.jsonl")
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))

@@ -1,4 +1,5 @@
 import { existsSync, rmSync } from "node:fs"
+import { notify } from "./opencode/notify"
 import {
   bumpNudge,
   feedback,
@@ -27,7 +28,7 @@ export default {
 
     const nudges: Nudges = {}
     const running = new Set<string>()
-    const log = (message: string) => console.error(`[task-gh-guard] ${message}`)
+    const log = (message: string) => void notify("task-gh-guard", message)
 
     // v2 runs the shell tool as "shell"; v1 calls it "bash".
     await ctx.tool.hook("execute.after", async (event: any) => {
@@ -57,6 +58,7 @@ export default {
             const info = await ctx.session.get({ sessionID }).catch(() => undefined)
             if (info?.parentID) continue
             const result: Gate = await gate(file)
+            if (result.error) log(`CI check could not run: ${result.error}`)
             if (result.status === "pass") {
               rmSync(file, { force: true })
               continue

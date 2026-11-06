@@ -199,6 +199,95 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(second.stdout.strip(), "")
         self.assertTrue(self.state_path().exists(), "state survives so the next turn checks again")
 
+    def test_fail_blocks_once_per_turn(self):
+        self.make_repo()
+        sha = self.branch("feature/x")
+        self.push_hook()
+        self.scenario({
+            sha: {
+                "check_runs": [{
+                    "name": "build-and-test",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "details_url": "https://ci.example/runs/1",
+                }],
+            }
+        })
+        first = self.stop()
+        self.assertEqual(json.loads(first.stdout)["decision"], "block")
+
+        second = self.stop(active=True)
+        self.assertEqual(second.returncode, 0)
+        self.assertEqual(second.stdout.strip(), "", "stop_hook_active must end the loop")
+        self.assertTrue(self.state_path().exists(), "state survives so the next turn checks again")
+
+    def test_fail_blocks_once_per_commit_per_window(self):
+        self.make_repo()
+        sha = self.branch("feature/x")
+        self.push_hook()
+        self.scenario({sha: {"check_runs": [{
+            "name": "build-and-test", "status": "completed", "conclusion": "failure",
+        }]}})
+        self.assertEqual(json.loads(self.stop().stdout)["decision"], "block")
+
+        again = self.stop()
+        self.assertEqual(again.stdout.strip(), "", "the same commit must not block twice inside the window")
+        self.assertTrue(
+            any(k.endswith("|feature/x@" + sha[:7]) for k in self.state()["reported"]),
+            self.state()["reported"],
+        )
+
+    def test_new_commit_in_the_same_repo_blocks_again(self):
+        self.make_repo()
+        sha = self.branch("feature/x")
+        self.push_hook()
+        self.scenario({sha: {"check_runs": [{
+            "name": "build-and-test", "status": "completed", "conclusion": "failure",
+        }]}})
+        self.assertEqual(json.loads(self.stop().stdout)["decision"], "block")
+
+        (self.repo / "b.txt").write_text("b")
+        self.git(self.repo, "add", ".")
+        self.git(self.repo, "commit", "-m", "b")
+        self.git(self.repo, "push", "origin", "feature/x")
+        newer = self.git(self.repo, "rev-parse", "refs/heads/feature/x")
+        self.push_hook()
+        self.scenario({
+            sha: {"check_runs": [{"name": "build-and-test", "status": "completed", "conclusion": "failure"}]},
+            newer: {"check_runs": [{"name": "build-and-test", "status": "completed", "conclusion": "failure"}]},
+        })
+
+        result = self.stop()
+        self.assertEqual(json.loads(result.stdout)["decision"], "block", "a new commit is new evidence")
+        self.assertIn("feature/x@" + newer[:7], result.stdout)
+
+    def test_fail_blocks_again_after_window(self):
+        self.make_repo()
+        sha = self.branch("feature/x")
+        self.push_hook()
+        self.scenario({sha: {"check_runs": [{
+            "name": "build-and-test", "status": "completed", "conclusion": "failure",
+        }]}})
+        env = {**self.env, "TASK_GH_GUARD_BLOCK_WINDOW": "0"}
+        self.assertEqual(json.loads(self.stop(env=env).stdout)["decision"], "block")
+        self.assertEqual(json.loads(self.stop(env=env).stdout)["decision"], "block")
+
+    def test_unreported_repo_still_blocks(self):
+        self.make_repo()
+        sha = self.branch("feature/x")
+        self.push_hook()
+        self.scenario({sha: {"check_runs": [{
+            "name": "build-and-test", "status": "completed", "conclusion": "failure",
+        }]}})
+        data = self.state()
+        entry = data["entries"][0]
+        data["entries"].append({**entry, "repo": "/tmp/other-repo"})
+        data["reported"] = {f"{entry['repo']}|feature/x@{sha[:7]}": {"at": 2**31 - 1}}
+        self.state_path().write_text(json.dumps(data))
+
+        result = self.stop()
+        self.assertEqual(json.loads(result.stdout)["decision"], "block", "a repo with no report must still block")
+
     def test_pass_allows_and_deletes_state(self):
         self.make_repo()
         sha = self.branch("feature/x")

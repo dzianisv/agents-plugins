@@ -37,8 +37,8 @@ unreadable verdict allows the command, shows a warning, and is logged with every
 `~/.agents/state/task-gh-guard/review.jsonl`. When the review or the CI check cannot run, the user gets a desktop notification (and an opencode toast) through
 `packages/shared/notify`; `AGENTS_NOTIFY=0` turns it off. Missing API keys are read from `~/.env` for the judge process
 only. Set `TASK_GH_GUARD_REVIEW=0` to turn the review off. Each review adds about 5 seconds to a write
-command. Runs in Claude Code (`PreToolUse`) and the opencode v1 plugin; the opencode v2 `server.ts` entry
-does not review yet.
+command. Runs in Claude Code (`PreToolUse`) and both opencode entries (v1 `src/opencode/plugin.ts`, v2
+`server.ts`).
 
 Try it by hand:
 

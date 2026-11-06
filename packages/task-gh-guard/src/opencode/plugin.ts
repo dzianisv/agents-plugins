@@ -4,7 +4,7 @@ import { existsSync } from "node:fs"
 import { bumpNudge, nudgeAllowed, nudgeKey, nudgeText, type Nudges } from "../core/feedback"
 import { gate, record, type Gate } from "../core/gate"
 import { isPushCommand } from "../core/push"
-import { check } from "../core/review"
+import { reviewCommand } from "../core/review"
 import { statePath } from "../core/state"
 import { notify } from "../shared/notify"
 
@@ -38,9 +38,8 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
     "tool.execute.before": async (input, output) => {
       if (!TOOLS.has(input.tool)) return
       const command = (output.args ?? {}).command
-      const verdict = await check(command)
-      if (verdict.decision === "deny") throw new Error(`task-gh-guard rules: ${verdict.reason}`)
-      if (verdict.reason.startsWith("rule review skipped")) log("error", verdict.reason)
+      const warning = await reviewCommand(command)
+      if (warning) log("error", warning)
       if (isPushCommand(command)) commands.set(input.callID, command)
     },
 

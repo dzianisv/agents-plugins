@@ -14,6 +14,7 @@
     "test:github": "jest test/github.test.ts",
     "test:tts:e2e": "OPENCODE_TTS_E2E=1 jest test/tts.e2e.test.ts",
     "test:e2e": "node --import tsx --test test/e2e.test.ts",
+    "e2e:containers": "bun scripts/e2e/run.ts",
     "test:tts:manual": "node --experimental-strip-types test/tts-manual.ts",
     "test:load": "node --import tsx --test test/plugin-load.test.ts",
     "test:reflection": "node --import tsx --test test/reflection-static.eval.test.ts",

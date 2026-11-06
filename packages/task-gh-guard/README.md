@@ -76,14 +76,18 @@ claude plugin install task-gh-guard@agents-plugins
 ```
 
 opencode: add the package directory to `plugins` in `~/.config/opencode/opencode.json`, then restart
-opencode. One entry serves both generations: v1 resolves `package.json` (`main` → `opencode/plugin.ts`),
+opencode. One entry serves both generations: v1 resolves `package.json` (`main` → `src/opencode/plugin.ts`),
 v2 loads `server.ts` at the package root. The entry must be the directory, not a file.
 
 ```json
 "plugins": ["/absolute/path/to/agents-plugins/packages/task-gh-guard"]
 ```
 
-Requires `python3`, `git` and `gh` (authenticated) on PATH.
+Claude Code runs the hooks in `hooks/hooks.json` with `bun`: `src/claude/review.ts` before a Bash call,
+`src/claude/record.ts` after one, `src/claude/stop.ts` at Stop, and `src/claude/session-start.ts` for the
+rules config. Each command prefixes PATH with the usual Bun install locations so a hook still finds `bun`.
+
+Requires `bun`, `git` and `gh` (authenticated) on PATH.
 
 ## Run it by hand
 
@@ -102,7 +106,6 @@ Exit codes: `0` pass, `1` a check failed, `2` pending or CI unreadable. `--json`
 
 ```bash
 bun test
-python3 -m unittest discover -s claude/tests
 ```
 
-Both suites use a real temp git repo with a bare origin and a fake `gh` on PATH.
+The suite uses a real temp git repo with a bare origin, a fake `gh` and a fake `opencode` on PATH.

@@ -1,22 +1,16 @@
+// opencode v1 plugin: review git writes, record pushes and nudge when CI is red or pending.
 import type { Plugin } from "@opencode-ai/plugin"
-import { existsSync, rmSync } from "node:fs"
-import { notify } from "./notify"
-import {
-  bumpNudge,
-  feedback,
-  gate,
-  isPushCommand,
-  nudgeAllowed,
-  nudgeKey,
-  record,
-  review,
-  stateFile,
-  type Gate,
-  type Nudges,
-} from "./core"
+import { existsSync } from "node:fs"
+import { bumpNudge, nudgeAllowed, nudgeKey, nudgeText, type Nudges } from "../core/feedback"
+import { gate, record, type Gate } from "../core/gate"
+import { isPushCommand } from "../core/push"
+import { check } from "../core/review"
+import { statePath } from "../core/state"
+import { notify } from "../shared/notify"
 
 const TOOLS = new Set(["bash", "shell"])
 
+/** opencode v1 plugin: review git writes, record pushes and nudge when CI is red or pending. */
 export const TaskGhGuard: Plugin = async ({ client, directory }) => {
   if (process.env.TASK_GH_GUARD_ENABLED === "0") return {}
 
@@ -36,7 +30,7 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
     bumpNudge(kind, key, nudges)
     await client.session.prompt({
       path: { id: sessionID },
-      body: { parts: [{ type: "text", text: feedback(result) }] },
+      body: { parts: [{ type: "text", text: nudgeText(result) }] },
     })
   }
 
@@ -44,7 +38,7 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
     "tool.execute.before": async (input, output) => {
       if (!TOOLS.has(input.tool)) return
       const command = (output.args ?? {}).command
-      const verdict = await review(command)
+      const verdict = await check(command)
       if (verdict.decision === "deny") throw new Error(`task-gh-guard rules: ${verdict.reason}`)
       if (verdict.reason.startsWith("rule review skipped")) log("error", verdict.reason)
       if (isPushCommand(command)) commands.set(input.callID, command)
@@ -52,11 +46,12 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
 
     "tool.execute.after": async (input) => {
       if (!TOOLS.has(input.tool)) return
-      const command = commands.get(input.callID) ?? (input as any).args?.command
+      const fallback = (input as { args?: { command?: unknown } }).args?.command
+      const command = commands.get(input.callID) ?? fallback
       commands.delete(input.callID)
-      if (!isPushCommand(command)) return
+      if (typeof command !== "string" || !isPushCommand(command)) return
       try {
-        await record(input.sessionID, command, directory)
+        await record("opencode", input.sessionID, directory, command)
       } catch (err) {
         log("error", `record failed: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -66,18 +61,14 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
       if (event.type !== "session.idle") return
       const sessionID = event.properties.sessionID
       if (!sessionID || running.has(sessionID)) return
-      const file = stateFile("opencode", sessionID)
+      const file = statePath("opencode", sessionID)
       if (!existsSync(file)) return
       running.add(sessionID)
       try {
         const info = await client.session.get({ path: { id: sessionID } }).catch(() => undefined)
         if (info?.data?.parentID) return
         const result = await gate(file)
-        if (result.error) log("error", `CI check could not run: ${result.error}`)
-        if (result.status === "pass") {
-          rmSync(file, { force: true })
-          return
-        }
+        if (result.status === "pass") return
         if (result.status !== "fail" && result.status !== "pending") return
         await nudge(sessionID, result)
       } catch (err) {

@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "description": "opencode plugin: block the end of a turn while GitHub CI for a commit this session pushed is red or still running.",
   "type": "module",
-  "main": "opencode/plugin.ts",
+  "main": "src/opencode/plugin.ts",
   "exports": {
-    ".": "./opencode/plugin.ts"
+    ".": "./src/opencode/plugin.ts"
   },
-  "files": ["server.ts", "opencode/", "claude/", "hooks/", "bin/"],
+  "files": ["server.ts", "src/", "hooks/", "bin/"],
   "scripts": {
     "test": "bun test"
   },

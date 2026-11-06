@@ -1,17 +1,9 @@
-import { existsSync, rmSync } from "node:fs"
-import { notify } from "./opencode/notify"
-import {
-  bumpNudge,
-  feedback,
-  gate,
-  isPushCommand,
-  nudgeAllowed,
-  nudgeKey,
-  record,
-  stateFile,
-  type Gate,
-  type Nudges,
-} from "./opencode/core"
+import { existsSync } from "node:fs"
+import { bumpNudge, nudgeAllowed, nudgeKey, nudgeText, type Nudges } from "./src/core/feedback"
+import { gate, record } from "./src/core/gate"
+import { isPushCommand } from "./src/core/push"
+import { statePath } from "./src/core/state"
+import { notify } from "./src/shared/notify"
 
 // v2.0.29 does not emit session.idle; turn-check uses the same three events.
 const TRIGGERS = new Set([
@@ -21,6 +13,7 @@ const TRIGGERS = new Set([
 ])
 const TOOLS = new Set(["bash", "shell"])
 
+/** opencode v2 entry: record pushes and nudge at the end of a turn when CI is red or pending. */
 export default {
   id: "task-gh-guard",
   async setup(ctx: any) {
@@ -36,8 +29,8 @@ export default {
         if (!TOOLS.has(String(event?.tool ?? ""))) return event
         if (event?.status && event.status !== "completed") return event
         const command = event?.input?.command
-        if (!isPushCommand(command)) return event
-        await record(String(event.sessionID ?? ""), command, ctx.location?.directory ?? process.cwd())
+        if (typeof command !== "string" || !isPushCommand(command)) return event
+        await record("opencode", String(event.sessionID ?? ""), ctx.location?.directory ?? process.cwd(), command)
       } catch (err) {
         log(`record failed: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -51,23 +44,19 @@ export default {
           if (!TRIGGERS.has((event as any)?.type)) continue
           const sessionID = (event as any)?.data?.sessionID
           if (typeof sessionID !== "string" || running.has(sessionID)) continue
-          const file = stateFile("opencode", sessionID)
+          const file = statePath("opencode", sessionID)
           if (!existsSync(file)) continue
           running.add(sessionID)
           try {
             const info = await ctx.session.get({ sessionID }).catch(() => undefined)
             if (info?.parentID) continue
-            const result: Gate = await gate(file)
-            if (result.error) log(`CI check could not run: ${result.error}`)
-            if (result.status === "pass") {
-              rmSync(file, { force: true })
-              continue
-            }
+            const result = await gate(file)
+            if (result.status === "pass") continue
             if (result.status !== "fail" && result.status !== "pending") continue
             const key = nudgeKey(result.entries)
             if (!key || !nudgeAllowed(result.status, key, nudges)) continue
             bumpNudge(result.status, key, nudges)
-            await ctx.session.prompt({ sessionID, text: feedback(result) })
+            await ctx.session.prompt({ sessionID, text: nudgeText(result) })
           } catch (err) {
             log(`gate failed: ${err instanceof Error ? err.message : String(err)}`)
           } finally {

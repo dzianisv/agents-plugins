@@ -1,50 +1,60 @@
-#!/usr/bin/env python3
-"""Stand-in for gh used by the task-gh-guard tests. Serves FAKE_GH_DIR/scenario.json."""
+#!/usr/bin/env bun
+// Stand-in for gh used by the task-gh-guard tests. Serves FAKE_GH_DIR/scenario.json.
+import { appendFileSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 
-import json
-import os
-import sys
+type Commit = {
+  check_runs?: unknown[]
+  statuses?: unknown[]
+  state?: string
+  pr?: number
+}
 
-args = sys.argv[1:]
-log = os.environ.get("FAKE_GH_LOG")
-if log:
-    with open(log, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(args) + "\n")
+const args = process.argv.slice(2)
+const log = process.env.FAKE_GH_LOG
+if (log) appendFileSync(log, `${JSON.stringify(args)}\n`)
 
-with open(os.path.join(os.environ["FAKE_GH_DIR"], "scenario.json"), encoding="utf-8") as fh:
-    scenario = json.load(fh)
-commits = scenario.get("commits", {})
-repo = scenario.get("repo", "acme/widgets")
+const scenario = JSON.parse(readFileSync(join(process.env.FAKE_GH_DIR ?? "", "scenario.json"), "utf8")) as {
+  repo?: string
+  commits?: Record<string, Commit>
+}
+const commits = scenario.commits ?? {}
 
+const emit = (value: unknown): never => {
+  console.log(JSON.stringify(value))
+  process.exit(0)
+}
 
-def emit(value):
-    print(json.dumps(value))
-    sys.exit(0)
+const die = (message: string): never => {
+  process.stderr.write(`gh: ${message}\n`)
+  process.exit(1)
+}
 
+if (args[0] === "api") {
+  const path = args.slice(1).find((arg) => !arg.startsWith("-")) ?? ""
+  const sha = path.split("/")[4] ?? ""
+  const data = commits[sha]
+  if (!data) die(`No commit found for SHA: ${sha} (HTTP 422)`)
+  if (path.endsWith("/check-runs")) {
+    const page = { total_count: (data.check_runs ?? []).length, check_runs: data.check_runs ?? [] }
+    emit(args.includes("--slurp") ? [page] : page)
+  }
+  if (path.endsWith("/status")) {
+    const statuses = data.statuses ?? []
+    emit({
+      state: data.state ?? (statuses.length ? "success" : "pending"),
+      total_count: statuses.length,
+      statuses,
+    })
+  }
+  die(`unhandled API path: ${path}`)
+}
 
-def die(message):
-    print(f"gh: {message}", file=sys.stderr)
-    sys.exit(1)
+if (args[0] === "pr" && args[1] === "list") {
+  const index = args.indexOf("--search")
+  const sha = index === -1 ? "" : args[index + 1]
+  const number = commits[sha]?.pr
+  emit(number ? [{ number, url: `https://github.com/${scenario.repo ?? "acme/widgets"}/pull/${number}` }] : [])
+}
 
-
-if args[:1] == ["api"]:
-    path = next((a for a in args[1:] if not a.startswith("-")), "")
-    parts = path.split("/")
-    sha = parts[4] if len(parts) > 4 else ""
-    data = commits.get(sha)
-    if data is None:
-        die(f"No commit found for SHA: {sha} (HTTP 422)")
-    if path.endswith("/check-runs"):
-        page = {"total_count": len(data.get("check_runs", [])), "check_runs": data.get("check_runs", [])}
-        emit([page] if "--slurp" in args else page)
-    if path.endswith("/status"):
-        statuses = data.get("statuses", [])
-        emit({"state": data.get("state", "pending" if not statuses else "success"), "total_count": len(statuses), "statuses": statuses})
-    die(f"unhandled API path: {path}")
-
-if args[:2] == ["pr", "list"]:
-    sha = args[args.index("--search") + 1] if "--search" in args else ""
-    number = commits.get(sha, {}).get("pr")
-    emit([{"number": number, "url": f"https://github.com/{repo}/pull/{number}"}] if number else [])
-
-die(f"unhandled arguments: {args}")
+die(`unhandled arguments: ${args.join(" ")}`)

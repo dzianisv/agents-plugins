@@ -38,6 +38,7 @@ We measured it: 143 real OpenCode + Claude Code sessions, 227 stops classified. 
 |--------|-------------|
 | **reflection-3.ts** | Judge layer — re-prompts agent when it stops prematurely |
 | **tts.ts** | TTS + Telegram notifications with two-way voice communication |
+| **opencode-auto-limit-nudge.ts** | Toasts the user when the active model hits a rate/usage limit (does not nudge the session on reset) |
 | **worktree-status.ts** | Git worktree status tool |
 | **packages/session-index** | Writes an LLM recap of each finished session into `~/.agents/sessions.csv` for cross-session lookup |
 | **packages/session-distill** | End-of-session retrospective that proposes where a fix, script or rule belongs, with approval |
@@ -59,6 +60,7 @@ Implements [Reflexion](https://lilianweng.github.io/posts/2023-06-23-agent/) (Sh
 |--------|-------------|
 | **reflection-3.ts** | Judge layer that verifies task completion and forces agent to continue if incomplete |
 | **tts.ts** | Text-to-speech + Telegram notifications with two-way communication |
+| **opencode-auto-limit-nudge.ts** | Toasts the user when the active model hits a rate/usage limit; session retries on its own |
 | **worktree-status.ts** | Git worktree status tool for checking dirty state, branch, and active sessions |
 | **packages/session-index** | Indexes finished sessions into `~/.agents/sessions.csv` with a short LLM recap, for lookup by later sessions |
 | **packages/session-distill** | Proposes where a session's lessons belong: new or edited skill, AGENTS.md, memory, hook, command or subagent |
@@ -204,7 +206,9 @@ curl -fsSL -o ~/.config/opencode/plugin/tts.ts \
 curl -fsSL -o ~/.config/opencode/plugin/telegram.ts \
   https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/telegram.ts && \
 curl -fsSL -o ~/.config/opencode/plugin/worktree.ts \
-  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/worktree.ts
+  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/worktree.ts && \
+curl -fsSL -o ~/.config/opencode/plugin/opencode-auto-limit-nudge.ts \
+  https://raw.githubusercontent.com/dzianisv/opencode-plugins/main/opencode-auto-limit-nudge.ts
 
 # Install required dependencies
 cd ~/.config/opencode && \

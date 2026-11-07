@@ -268,6 +268,16 @@ async function prNumber(owner: string, name: string, sha: string): Promise<numbe
   return typeof number === "number" ? number : null
 }
 
+/** True when the branch on GitHub no longer contains the recorded commit (amended, re-signed or force-pushed). */
+async function superseded(owner: string, name: string, branch: string, sha: string): Promise<boolean> {
+  const head = await ghJson(["api", `repos/${owner}/${name}/branches/${branch}`], 30_000)
+  const headSha = (head.doc as { commit?: { sha?: unknown } } | null)?.commit?.sha
+  if (head.error || typeof headSha !== "string" || headSha === sha) return false
+  const compare = await ghJson(["api", `repos/${owner}/${name}/compare/${sha}...${headSha}`], 30_000)
+  const status = (compare.doc as { status?: unknown } | null)?.status
+  return !compare.error && (status === "diverged" || status === "behind")
+}
+
 /** Drops a cancelled run when a later run of the same check finished on the same commit. */
 export function dropSuperseded(runs: CheckRun[]): CheckRun[] {
   const started = (run: CheckRun): string => run.started_at ?? ""
@@ -308,6 +318,8 @@ export async function checkEntry(entry: StateEntry, now: number, lookupPr: boole
     base.error = "incomplete state entry (owner, repo or sha missing)"
     return base
   }
+
+  if (await superseded(owner, name, base.branch, sha)) return base
 
   const runsResult = await fetchCheckRuns(owner, name, sha)
   const statusResult = await fetchStatuses(owner, name, sha)

@@ -12,9 +12,10 @@ import {
   modelLabel,
   formatNudgeMessage,
   isRetryStatus,
+  isModelSwitched,
   isSuppressed,
   AutoLimitNudgeConfig,
-} from "../opencode-auto-limit-nudge.test-helpers.ts"
+} from "../opencode-auto-limit-nudge.test-helpers"
 
 // ============================================================================
 // HELPERS
@@ -31,6 +32,23 @@ function makeRetryEvent(overrides: any = {}) {
         message: "rate_limit_exceeded",
         next: Date.now() + 60_000,
         ...overrides.status,
+      },
+      ...overrides,
+    },
+  }
+}
+
+function makeModelSwitchEvent(overrides: any = {}) {
+  return {
+    type: "session.next.model.switched",
+    properties: {
+      sessionID: "ses_test123",
+      timestamp: Date.now(),
+      messageID: "msg_1",
+      model: {
+        id: "deepseek-v4.1-flash:free",
+        providerID: "deepseek",
+        ...overrides.model,
       },
       ...overrides,
     },
@@ -102,6 +120,16 @@ describe("opencode-auto-limit-nudge unit: helpers", () => {
 
   it("isRetryStatus: returns false when status is missing", () => {
     assert.strictEqual(isRetryStatus({ type: "session.status", properties: {} }), false)
+  })
+
+  // -- isModelSwitched ------------------------------------------------------
+
+  it("isModelSwitched: returns true for session.next.model.switched event", () => {
+    assert.strictEqual(isModelSwitched(makeModelSwitchEvent()), true)
+  })
+
+  it("isModelSwitched: returns false for session.status event", () => {
+    assert.strictEqual(isModelSwitched(makeRetryEvent()), false)
   })
 
   // -- isSuppressed ---------------------------------------------------------

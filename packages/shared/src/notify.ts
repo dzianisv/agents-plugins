@@ -48,7 +48,7 @@ function command(title: string, message: string, level: string): string[] | unde
   return undefined
 }
 
-export type NotifyOptions = { level?: "error" | "warning"; client?: any }
+export type NotifyOptions = { level?: "error" | "warning"; client?: any; dedupe?: boolean }
 
 /** Tells the user something failed. Resolves true when shown; never rejects. */
 export async function notify(title: string, message: string, options: NotifyOptions = {}): Promise<boolean> {
@@ -56,7 +56,7 @@ export async function notify(title: string, message: string, options: NotifyOpti
     if (process.env.AGENTS_NOTIFY === "0") return false
     const level = options.level ?? "error"
     const text = message.split(/\s+/).filter(Boolean).join(" ").slice(0, MAX_CHARS)
-    if (seenRecently(title, text)) return false
+    if (options.dedupe !== false && seenRecently(title, text)) return false
     options.client?.tui
       ?.showToast({ body: { title, message: text, variant: level, duration: 10000 } })
       ?.catch?.(() => {})

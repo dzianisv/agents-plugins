@@ -138,18 +138,8 @@ export const Supervisor: Plugin = async ({ client }) => {
       store,
       record: (entry) => record(stateDir(), entry),
       notify: (message) => log("error", message),
-      onVerdict: (verdict) => {
-        if (verdict.verdict !== "FAIL") return
-        client.tui
-          .showToast({
-            body: {
-              title: "supervisor",
-              message: `${verdict.violations.length} rule violation(s): ${verdict.violations.map((v) => v.rule).join("; ")}`,
-              variant: "warning",
-              duration: 10000,
-            },
-          })
-          .catch(() => {})
+      notifyFeedback: async (summary) => {
+        await notify("turn-check feedback", summary, { client, level: "warning", dedupe: false })
       },
       extra: () => judgeMeta,
     })

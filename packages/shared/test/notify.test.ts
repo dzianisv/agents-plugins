@@ -36,6 +36,12 @@ test("shows the message once per window and toasts through the client", async ()
   expect(toasts[0].body).toMatchObject({ title: "turn-check", message: "audit failed: boom", variant: "error" })
 })
 
+test("dedupe false shows a repeated message every time", async () => {
+  expect(await notify("turn-check feedback", "1 rule violation(s): a", { dedupe: false })).toBe(true)
+  expect(await notify("turn-check feedback", "1 rule violation(s): a", { dedupe: false })).toBe(true)
+  expect(calls()).toHaveLength(2)
+})
+
 test("can be turned off and never rejects", async () => {
   process.env.AGENTS_NOTIFY = "0"
   expect(await notify("t", "m")).toBe(false)

@@ -62,6 +62,9 @@ export async function auditSession(sessionID: string, transcriptPath: string, op
     notify: async (message) => {
       await notify("turn-check", message)
     },
+    notifyFeedback: async (summary) => {
+      await notify("turn-check feedback", summary, { level: "warning", dedupe: false })
+    },
   })
 }
 

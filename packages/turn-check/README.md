@@ -2,8 +2,9 @@
 
 Plugin for opencode and Claude Code. When the agent stops, a cheap model reads the conversation
 and `~/.agents/AGENTS.md`, then lists the rules the agent broke, with quotes. The findings arrive
-as a note on your next message. opencode also shows a toast.
-Design and limits: [DESIGN.md](DESIGN.md).
+as a note on your next message. Every time that happens you also get a desktop notification
+("N rule violation(s): rule; rule"), on both runtimes, never deduplicated; opencode v1 adds a toast.
+`AGENTS_NOTIFY=0` turns it off. Design and limits: [DESIGN.md](DESIGN.md).
 
 ## When it cannot run
 
@@ -32,7 +33,7 @@ All logic lives in one TypeScript core, `src/core/`, that both runtimes call. Cl
 
 v2 differences from v1:
 
-- The judge runs as a sessionless `ctx.generate.text` call (system prompt + transcript in one prompt). No audit child sessions, no judge agent, no toast — v2 has no server-side toast API, so FAIL verdicts are logged to the server log instead (`console.error`).
+- The judge runs as a sessionless `ctx.generate.text` call (system prompt + transcript in one prompt). No audit child sessions, no judge agent, no toast — v2 has no server-side toast API, so a FAIL verdict raises the desktop notification only.
 - Audits trigger on `session.execution.succeeded`/`failed`/`interrupted` (v2.0.29 does not emit `session.idle`). The plugin runs in the server process, so headless `opencode run` sessions served by it are audited too; `SUPERVISOR_AUDIT_RUN` is v1-only.
 - Feedback is attached via the v2 `context` session hook on the last user message of the turn, re-attached on every step of that turn. A plugin instance only audits sessions from its own project directory.
 

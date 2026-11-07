@@ -70,8 +70,8 @@ const commit = (name: string): string => {
   return git(repo, "rev-parse", `refs/heads/${name}`)
 }
 
-const scenario = (commits: Record<string, unknown>) =>
-  writeFileSync(join(ghDir, "scenario.json"), JSON.stringify({ repo: SLUG, commits }))
+const scenario = (commits: Record<string, unknown>, extra: { branches?: Record<string, string>; compare?: Record<string, string> } = {}) =>
+  writeFileSync(join(ghDir, "scenario.json"), JSON.stringify({ repo: SLUG, commits, ...extra }))
 
 const hook = (script: string, payload: unknown, extra: NodeJS.ProcessEnv = {}) =>
   spawnSync(bun, [join(claudeDir, script)], {
@@ -423,6 +423,36 @@ describe("stop hook", () => {
     const calls = readFileSync(ghLog, "utf8")
     expect(calls).toContain(sha)
     expect(calls).not.toContain(git(other, "rev-parse", "refs/heads/feature/x"))
+  })
+
+  test("a commit the branch no longer contains is not checked", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    pushHook()
+    const rewritten = "b".repeat(40)
+    scenario(
+      { [sha]: checkRuns([{ name: "build-and-test", status: "completed", conclusion: "failure" }]) },
+      { branches: { "feature/x": rewritten }, compare: { [`${sha}...${rewritten}`]: "diverged" } },
+    )
+
+    const result = stop()
+    expect(result.status).toBe(0)
+    expect(String(result.stdout).trim()).toBe("")
+    expect(existsSync(statePath())).toBe(false)
+    expect(readFileSync(ghLog, "utf8")).not.toContain("check-runs")
+  })
+
+  test("a commit with newer commits on top is still checked", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    pushHook()
+    const newer = "c".repeat(40)
+    scenario(
+      { [sha]: checkRuns([{ name: "build-and-test", status: "completed", conclusion: "failure" }]) },
+      { branches: { "feature/x": newer }, compare: { [`${sha}...${newer}`]: "ahead" } },
+    )
+
+    expect(blocked(stop()).decision).toBe("block")
   })
 
   test("does nothing when the guard is disabled", () => {

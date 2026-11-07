@@ -17,6 +17,8 @@ if (log) appendFileSync(log, `${JSON.stringify(args)}\n`)
 const scenario = JSON.parse(readFileSync(join(process.env.FAKE_GH_DIR ?? "", "scenario.json"), "utf8")) as {
   repo?: string
   commits?: Record<string, Commit>
+  branches?: Record<string, string>
+  compare?: Record<string, string>
 }
 const commits = scenario.commits ?? {}
 
@@ -32,7 +34,18 @@ const die = (message: string): never => {
 
 if (args[0] === "api") {
   const path = args.slice(1).find((arg) => !arg.startsWith("-")) ?? ""
-  const sha = path.split("/")[4] ?? ""
+  const parts = path.split("/")
+  if (parts[3] === "branches") {
+    const head = scenario.branches?.[parts.slice(4).join("/")]
+    if (!head) die("Branch not found (HTTP 404)")
+    emit({ commit: { sha: head } })
+  }
+  if (parts[3] === "compare") {
+    const status = scenario.compare?.[parts[4] ?? ""]
+    if (!status) die("Not Found (HTTP 404)")
+    emit({ status })
+  }
+  const sha = parts[4] ?? ""
   const data = commits[sha]
   if (!data) die(`No commit found for SHA: ${sha} (HTTP 422)`)
   if (path.endsWith("/check-runs")) {

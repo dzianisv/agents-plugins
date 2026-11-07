@@ -55,7 +55,8 @@ bin/git-rules-review check --command "gh api graphql -f query='mutation { resolv
    `--dry-run`/`--no-push`), record the pushed branch and its SHA, but only when
    `refs/heads/<branch>` equals `refs/remotes/origin/<branch>`. No fetch.
 3. **Check only those commits.** Read check runs and statuses per recorded SHA, not per PR head. A newer
-   commit from someone else on the branch does not change the verdict.
+   commit from someone else on the branch does not change the verdict. A recorded commit the branch no
+   longer contains (amended, re-signed, force-pushed) is dropped without a CI lookup.
 4. **Clear when proven.** When every recorded SHA passes, delete the state file.
 5. **Bounded blocking.** A failing or pending check blocks the stop with every failing check, its URL
    and the PR number, at most once per turn (`stop_hook_active`) and once per pushed commit per hour

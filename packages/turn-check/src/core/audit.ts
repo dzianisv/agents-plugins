@@ -29,6 +29,7 @@ export type AuditOptions = {
   record: (entry: Record<string, unknown>) => void
   notify: (message: string) => void | Promise<void>
   onVerdict?: (verdict: Verdict) => void
+  notifyFeedback?: (summary: string) => void | Promise<void>
   extra?: () => Record<string, unknown>
   now?: () => number
 }
@@ -81,5 +82,6 @@ export async function auditOnce(options: AuditOptions): Promise<AuditOutcome> {
     return "pass"
   }
   options.store.writePending(formatFeedback(verdict.violations))
+  await options.notifyFeedback?.(`${verdict.violations.length} rule violation(s): ${verdict.violations.map((v) => v.rule).join("; ")}`)
   return "fail"
 }

@@ -47,6 +47,18 @@ describe("auditSession", () => {
     expect(typeof entry.time).toBe("string")
   })
 
+  test("a FAIL notifies the feedback and a PASS does not", async () => {
+    process.env.FAKE_REPLY = PASS_REPLY
+    expect(await auditSession("s1", env.transcript)).toBe("pass")
+    expect(env.notifiedLines()).toEqual([])
+
+    process.env.FAKE_REPLY = FAIL_REPLY
+    writeTranscript(env.transcript, [user("fix it", "u1"), assistant([text("done")], "a1"), user("more", "u2"), assistant([text("ok")], "a2")])
+    expect(await auditSession("s1", env.transcript)).toBe("fail")
+    const [line] = env.notifiedLines()
+    expect(line.startsWith("turn-check feedback|2 rule violation(s): ")).toBe(true)
+  })
+
   test("the judge command, env and prompt", async () => {
     process.env.SUPERVISOR_MODEL = "prov/some/model"
     await auditSession("s1", env.transcript)

@@ -145,8 +145,8 @@ export default {
         store,
         record: (entry) => record(stateDir(), entry),
         notify: (message) => fail(message),
-        onVerdict: (verdict) => {
-          if (verdict.verdict === "FAIL") log(`${verdict.violations.length} rule violation(s) in ${sessionID}: ${verdict.violations.map((v) => v.rule).join("; ")}`)
+        notifyFeedback: async (summary) => {
+          await notify("turn-check feedback", summary, { level: "warning", dedupe: false })
         },
       })
     }

@@ -44,8 +44,16 @@ export function formatNudgeMessage(
   return parts.join(" ")
 }
 
+/**
+ * v2 events carry `type` at the top level and `properties` below.
+ * A retry status is `session.status` with `properties.status.type === "retry"`.
+ */
 export function isRetryStatus(event: any): boolean {
   return event?.type === "session.status" && event?.properties?.status?.type === "retry"
+}
+
+export function isModelSwitched(event: any): boolean {
+  return event?.type === "session.next.model.switched"
 }
 
 export function isSuppressed(now: number, last?: number, suppressMs: number = 60_000): boolean {

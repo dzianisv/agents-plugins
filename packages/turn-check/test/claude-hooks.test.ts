@@ -241,7 +241,7 @@ describe("hooks file and manifest", () => {
 
   test("the plugin manifest names turn-check", () => {
     const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))
-    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.6.0"])
+    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.0"])
     expect(manifest.author).toEqual({ name: "Dzianis Vashchuk" })
   })
 })

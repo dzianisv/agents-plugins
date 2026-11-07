@@ -27,7 +27,7 @@ opencode: add this directory to `plugins` in `~/.config/opencode/opencode.json`,
 /absolute/path/to/opencode-plugins/packages/turn-check
 ```
 
-One entry serves both generations: opencode v1 resolves the directory through `package.json` (`main`/`exports` → `src/opencode/plugin.ts`), opencode v2 loads `server.ts` at the repo root. v2 rejects config entries that point at a file (`configured plugin path must be a directory`), so the old `.../opencode/plugin.ts` entry no longer works there.
+opencode 2.x (2.0.29 and the desktop app's 2.2.5) loads `server.ts` through `package.json` `main`; opencode 1.x needs the file entry `src/opencode/plugin.ts`. v2 rejects config entries that point at a file (`configured plugin path must be a directory`), so the old `.../opencode/plugin.ts` entry no longer works there.
 
 All logic lives in one TypeScript core, `src/core/`, that both runtimes call. Claude Code hooks are thin entrypoints in `src/claude/` (wired by `hooks/hooks.json` with `bun`); the opencode v1 plugin is `src/opencode/plugin.ts` and the v2 entry is `server.ts`.
 

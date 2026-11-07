@@ -77,8 +77,7 @@ claude plugin install task-gh-guard@agents-plugins
 ```
 
 opencode: add the package directory to `plugins` in `~/.config/opencode/opencode.json`, then restart
-opencode. One entry serves both generations: v1 resolves `package.json` (`main` → `src/opencode/plugin.ts`),
-v2 loads `server.ts` at the package root. The entry must be the directory, not a file.
+opencode. opencode 2.x (2.0.29 and the desktop app's 2.2.5) loads `server.ts` through `package.json` `main`. The entry must be the directory, not a file. opencode 1.x needs the file entry `src/opencode/plugin.ts`.
 
 ```json
 "plugins": ["/absolute/path/to/agents-plugins/packages/task-gh-guard"]

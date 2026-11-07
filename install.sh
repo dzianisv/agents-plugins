@@ -22,6 +22,7 @@ PLUGINS=(
   "reflection-3.ts"
   "tts.ts"
   "telegram.ts"
+  "opencode-auto-limit-nudge.ts"
   "worktree.ts"
 )
 

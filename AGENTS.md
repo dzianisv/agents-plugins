@@ -60,6 +60,7 @@ Primary plugins:
 - `reflection.ts` (reflection-3): validates task completion and workflow requirements.
 - `tts.ts`: reads the final assistant response aloud (macOS or Coqui server).
 - `telegram.ts`: posts completion notifications to Telegram and accepts replies.
+- `opencode-auto-limit-nudge.ts`: toasts the user when the active model hits a rate/usage limit (does not nudge the session on reset).
 
 ## Plugin Summaries
 
@@ -120,8 +121,44 @@ Artifacts:
 
 ## Plugin Development Rules
 
-### No console output from plugins
-Never use `console.log`, `console.error`, `console.warn`, `process.stdout.write`, or `process.stderr.write` in plugin runtime code. Any output to stdout/stderr corrupts the OpenCode TUI.
+### TypeScript only
+All plugins must be written in **TypeScript** (`.ts`). Never ship a plugin in plain
+JavaScript. TypeScript gives type safety against the OpenCode plugin API and
+catches hook/event signature mistakes at edit time.
+
+### OpenCode v2 plugin shape
+Every plugin must use the **v2** plugin module shape. The live OpenCode server
+rejects the legacy v1 function shape with `Plugin must export a default
+definition with an id and an effect or setup function`.
+
+```ts
+export default {
+  id: "my-plugin",
+  async setup(ctx) {
+    // ctx.event.subscribe() returns an async iterable of events
+    for await (const event of ctx.event.subscribe()) {
+      if (event?.type !== "session.status") continue
+      // ... handle event
+    }
+
+    // Toasts via the TUI API, never client.tui.publish
+    ctx.tui.ui.toast({ title: "My Plugin", message: "hi", variant: "info", duration: 3000 })
+  },
+}
+```
+
+Key v2 rules:
+- `export default { id, setup }` — `setup(ctx)` is the entry point.
+- `ctx.event.subscribe()` returns an **async iterable**, not a promise. Iterate
+  with `for await`, never `.then()`.
+- Toasts go through `ctx.tui.ui.toast({ title, message, variant, duration })`.
+- The v2 event names differ from v1 (e.g. `session.next.model.switched` instead
+  of `chat.message`). Check `@opencode-ai/sdk` `v2/gen/types.gen.d.ts` for the
+  current event shapes before wiring a hook.
+- Never use `console.log`/`console.error`/`console.warn`/`process.stdout.write`/
+  `process.stderr.write` in plugin runtime code — it corrupts the OpenCode TUI.
+  Write debug output to a log file instead.
+- Run `npm test` and `npm run test:load` before finishing.
 
 For debug/diagnostic logging, write to log files instead:
 - Reflection plugin: `.reflection/debug.log` (enabled by `REFLECTION_DEBUG=1`)
@@ -152,3 +189,4 @@ npm run eval:judge
 - `docs/reflection.md`
 - `docs/tts.md`
 - `docs/telegram.md`
+- `docs/opencode-auto-limit-nudge.md`

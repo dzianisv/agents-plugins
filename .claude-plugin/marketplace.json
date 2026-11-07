@@ -14,6 +14,16 @@
         "name": "dzianisv",
         "url": "https://github.com/dzianisv"
       }
+    },
+    {
+      "name": "session-autoreflect",
+      "source": "./packages/session-autoreflect",
+      "description": "After 30 minutes of work in a session, inject a reflection prompt (goal, acceptance criteria, what is wrong, is the plan still right, can you unblock yourself) and tell the agent to act on it. Idle sessions are never touched.",
+      "version": "0.1.0",
+      "author": {
+        "name": "dzianisv",
+        "url": "https://github.com/dzianisv"
+      }
     }
   ]
 }

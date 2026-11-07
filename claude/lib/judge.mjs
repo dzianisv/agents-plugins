@@ -17,9 +17,8 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,76 +66,33 @@ function sanitizeError(text) {
 // ---------------------------------------------------------------------------
 
 /**
- * Reads the Claude Code OAuth credentials JSON from its platform store.
- * On macOS, Claude Code keeps credentials in the login keychain (generic
- * password "Claude Code-credentials"), NOT in a file — so the file read on
- * darwin almost always fails and the keychain is the real source. On
- * Linux/Windows the credentials live at ~/.claude/.credentials.json.
+ * Loads the OAuth access token from ~/.claude/.credentials.json.
+ * Throws a sentinel error (prefixed "judge:") if the file is missing,
+ * unreadable, or the token is absent/empty — caller treats this as no-inject.
  *
- * Returns the parsed object ({ claudeAiOauth: { accessToken, ... } }) or null
- * if no source is available / parseable.
- *
- * @returns {object | null}
+ * @returns {string} access token
  */
-function readOauthCredentials() {
-  // 1. File (Linux/Windows, and macOS installs that opted out of keychain).
+function loadOAuthToken() {
   const credPath = join(homedir(), '.claude', '.credentials.json');
+  let raw;
   try {
-    return JSON.parse(readFileSync(credPath, 'utf8'));
-  } catch {
-    /* fall through to keychain on macOS */
+    raw = readFileSync(credPath, 'utf8');
+  } catch (err) {
+    throw new Error(`judge: cannot read credentials file: ${err.message}`);
   }
 
-  // 2. macOS keychain.
-  if (platform() === 'darwin') {
-    try {
-      const out = execFileSync(
-        'security',
-        ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-        { encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'ignore'] },
-      );
-      return JSON.parse(out.trim());
-    } catch {
-      /* no keychain item, or not parseable */
-    }
-  }
-
-  return null;
-}
-
-/**
- * Loads auth credentials for the Anthropic API, trying sources in order:
- *   1. ANTHROPIC_API_KEY env var (x-api-key header, no beta header needed)
- *   2. OAuth token from ~/.claude/.credentials.json (Linux/Windows) or the
- *      macOS login keychain ("Claude Code-credentials") — Bearer +
- *      oauth-2025-04-20 beta.
- *
- * Returns { type: 'apikey' | 'oauth', value: string }.
- * Throws a sentinel error (prefixed "judge:") if neither is available.
- *
- * @returns {{ type: 'apikey' | 'oauth', value: string }}
- */
-function loadAuth() {
-  // 1. Explicit API key env var
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (apiKey && apiKey.trim()) {
-    return { type: 'apikey', value: apiKey.trim() };
-  }
-
-  // 2. OAuth token from credentials file or macOS keychain
-  const obj = readOauthCredentials();
-  if (!obj) {
-    throw new Error(
-      'judge: no ANTHROPIC_API_KEY set and no Claude Code OAuth credentials found ' +
-      '(checked ~/.claude/.credentials.json and the macOS keychain)',
-    );
+  let obj;
+  try {
+    obj = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`judge: credentials file is not valid JSON: ${err.message}`);
   }
 
   const token = obj?.claudeAiOauth?.accessToken;
   if (!token) {
-    throw new Error('judge: OAuth credentials present but missing claudeAiOauth.accessToken');
+    throw new Error('judge: no claudeAiOauth.accessToken in ~/.claude/.credentials.json');
   }
-  return { type: 'oauth', value: token };
+  return token;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,8 +114,30 @@ function truncate(s, n) {
 }
 
 /**
+ * Truncates with head + tail preservation. Long final_assistant_text often
+ * has both opening commitment and closing delivery; keeping both is critical
+ * for accurate classification (see prompt-tune-v2 audit, #138).
+ *
+ * @param {string} s
+ * @param {number} head - chars to keep from start
+ * @param {number} tail - chars to keep from end
+ * @returns {string}
+ */
+function truncateHeadTail(s, head, tail) {
+  if (!s) return '';
+  if (s.length <= head + tail) return s;
+  return s.slice(0, head) + `\n…[truncated ${s.length - head - tail}ch middle]…\n` + s.slice(-tail);
+}
+
+/**
  * Builds the classifier prompt from a stopContext object.
- * Prompt content is identical to classify-cc-stops.mjs's buildPrompt().
+ *
+ * IMPORTANT: This prompt is duplicated in three places that MUST stay in sync:
+ *   - claude/lib/judge.mjs (this file — runs in the live hook)
+ *   - evals/scripts/classify-cc-stops.mjs (offline CC labeling)
+ *   - evals/scripts/classify-oc-stops.mjs (offline OC labeling)
+ * Source of truth: evals/prompts/cc-stop-classifier.v2.txt
+ * Follow-up: extract into a shared module the hook can import without I/O.
  *
  * @param {object} ctx - stopContext from buildStopContext()
  * @returns {string}
@@ -168,18 +146,29 @@ function buildPrompt(ctx) {
   const userMsgs = (ctx.user_messages ?? [])
     .map((m, i) => `[USER ${i + 1}] ${truncate(m, 1200)}`)
     .join('\n\n');
-  const finalText = truncate(ctx.final_assistant_text ?? '', 2400);
+  // Head + tail truncation: long turns have both opening commitment and
+  // closing delivery; missing the closing leads to false-positive drift.
+  const finalText = truncateHeadTail(ctx.final_assistant_text ?? '', 1800, 2400);
   const tools = (ctx.tools_available_inferred ?? []).join(', ');
 
-  return `You classify how a Claude Code assistant ended a turn. Pick ONE category.
+  return `You classify how an assistant ended a turn at a Stop boundary. Pick ONE category.
+
+CRITICAL RULE — "working" almost NEVER applies at Stop.
+A Stop event means the assistant has stopped responding. If the assistant narrated finished action ("I've created X. Tests pass. Now run Y."), prefer \`complete\` (work is done) or \`summary_drift_stop\` (claimed a next step, did not do it). Only assign \`working\` if the text is an explicit mid-action verbalization with NO closure AND no narration of finished steps.
+
+CRITICAL RULE — CLOSING DELIVERY DOMINATES intermediate "Let me / I'll" phrases.
+A long turn often narrates the agent's process: "Let me check X. Now let me read Y. Let me apply the fixes." If the SAME turn ends with a DELIVERED RESULT (committed PRs, test pass counts, verdict text, code-review checklist with FAIL/PASS, status verdict, error message returned to user, imperative guidance to user like "Try X" / "Use /clear"), the turn is COMPLETE. The closing delivery overrides intermediate "Let me" signals — those were process narration of work that has now FINISHED. Only mark drift if the turn ENDS on the unfinished action ("Let me apply the fix" with NO subsequent result in the same turn).
+
+CRITICAL RULE — IMPERATIVE GUIDANCE TO USER IS COMPLETE.
+Sentences like "Try X", "Use /clear", "Run npm test", "Check Y", "Look at Z" directed AT THE USER (not narrating agent self-action) are guidance — complete. Drift requires first-person commitment from the agent itself.
 
 CATEGORIES:
-- complete: task is done; assistant delivered the answer or finished the requested work WITH evidence.
-- waiting_for_user_legitimate: assistant asks a question that ONLY the user can answer (OAuth/2FA/captcha/credential retrieval, or a genuine preference the user must supply).
-- tool_available_punt: assistant punts to the user about something the available tools could resolve. The assistant has tools like Bash, WebFetch, browser MCP, etc., yet asks the user instead of trying.
-- summary_drift_stop: assistant wrote a summary/plan with a "next step" and STOPPED before doing it. e.g., "I've created the file. Next step: run the tests." (without running them.)
-- genuinely_stuck: assistant stopped mid-thought or without clear conclusion; no question, no summary, just halted. Often a short response.
-- working: rarely a stop; only assign if the final turn is clearly mid-action (e.g., "Running tests now...") with no closure.
+- complete: task delivered. Includes status reports, results, conclusions, acknowledgements ("Ignored.", "Done."), and delivery wrap-ups that mention what the user CAN do later ("you can disable this with X", "watch over the next few days for Y"). Discriminator: phrasing is directed at the user ("you can", "for you to", "watch over time") and the assistant has no open action it claimed it would take next.
+- waiting_for_user_legitimate: assistant asks a question ONLY the user can answer (preference, missing private info, permission to proceed, choice between options). The question is not answerable by any tool.
+- tool_available_punt: assistant asks the user something the available tools could resolve. If TOOLS THE ASSISTANT HAD includes anything that could answer (Bash for shell state, Read/Glob/Grep for file content, WebFetch for URLs, browser MCP for live UI, etc.), and the assistant asks the user for that info instead of using the tool, prefer this over \`waiting_for_user_legitimate\`.
+- summary_drift_stop: assistant wrote a plan/summary that CLAIMS an ACTIVE next step it intends to take itself (run a tool, write code, commit, open a PR), then stopped before doing it. Marker phrases for ACTIVE next steps: "I will run", "I'll commit", "Next I'll", "Let me now run/edit/write", "Now I'm going to ...". Numbered execution plans count too. Discriminator vs \`complete\`: (a) "I will do X" where X is action only the agent can take = drift. (b) "you can do X" / "feel free to" / "watch X over time" = complete (guidance to user). (c) "Will report when background job finishes" / "Will notify when deploy completes" / "Monitor armed, will share results" = COMPLETE (passive waiting on something already running). (d) "I can do X" / "Next I can run X" / "If you want, I can X" = COMPLETE (offer to user, not commitment). Drift needs commitment ("I will", "Let me now", numbered plan), not capability. (e) Present-tense process narration that DELIVERS a finding ("I'm checking X" ending with a concrete observation) = COMPLETE (status delivery). Drift requires a *named next action* that did not happen. (f) Next-steps list as user hand-off ("Next steps: 1. ...") with no "I will" = COMPLETE (task hand-off). "Next I'll run tests" = drift.
+- genuinely_stuck: assistant produced no closure: empty text, single filler word ("Continuing."), mid-sentence cut-off, or a thought that trails off ("Let me check if there's a mismatch..." with no continuation). No clear question, no clear delivery.
+- working: RARE. Only when the final turn is explicit raw "doing it now" with no narration of any finished step. If the agent reported ANY result or status, it is not \`working\`.
 
 TOOLS THE ASSISTANT HAD: ${tools || '(none recorded)'}
 
@@ -189,18 +178,30 @@ ${userMsgs || '(none)'}
 FINAL ASSISTANT TEXT:
 ${finalText}
 
-PREMATURE-STOP ANTIPATTERNS (mined from 227 real agent stops where the user replied; 78% were premature — the user said "go"/"continue"/"yes do it" or corrected the agent). Use these to sharpen category assignments:
-
-- PERMISSION-SEEKING (most common, ~40%): the response ends by asking to do work it can already do — "Want me to…?", "Would you like me to…?", "Should I…?", "Shall I proceed?", or "Try running it now"/"Please run X and confirm" (deferring a check the agent could run itself). DECISIVE TEST: if the final turn is a yes/no or "want me to X?" question AND X is something the agent can do with its own tools AND X carries no irreversible risk → classify as tool_available_punt. Asking is only legitimate before a destructive/irreversible action (delete prod data, force-push, send an irreversible external message) → classify as waiting_for_user_legitimate.
-
-- STOPPED-WITH-TODOS (~30%): the response lists "Remaining Tasks"/"Next steps"/"Still TODO"/"What I did NOT do" or names a verify/run/check/create-PR step as "next" — then stops without doing it. Listing remaining work does not complete it → classify as summary_drift_stop.
-
-- FALSE-COMPLETE: claims "done"/"complete"/"ready"/"all tasks complete" but the CORE requested action never happened, a required check was skipped, or there is no evidence. An empty/no-text response on an action task is NEVER complete. For an "add a <feature>" task, writing files is not enough — code must be wired in AND verified (test/build/run); "ready to use" with no integration is incomplete → classify as summary_drift_stop (not complete).
-
-- LEGITIMATE STOP (do NOT flag as premature): genuine human-only block (OAuth consent, 2FA code, credential/API-key retrieval, captcha) → waiting_for_user_legitimate. Genuine completion WITH evidence (commands+output, tests passing, PR/CI verified) → complete; do not invent missing work.
+FEW-SHOT EXAMPLES (real Stop events):
+A — complete: FINAL "Deployed. To disable later: flip the flag in config.ts. Watch the dashboard over the next few days." → {"category":"complete","reason":"shipped + user-directed guidance, no agent next action","confidence":0.9}
+B — summary_drift_stop: FINAL "I've created the file. Next I'll run the tests and commit." → {"category":"summary_drift_stop","reason":"claimed agent next step but stopped","confidence":0.9}
+C — complete: FINAL "Monitor armed. Will report per-job results + final status." → {"category":"complete","reason":"status delivered, monitoring is passive","confidence":0.85}
+D — waiting_for_user_legitimate: FINAL "Which do you prefer — single post or series?" → {"category":"waiting_for_user_legitimate","reason":"user preference no tool can answer","confidence":0.9}
+E — tool_available_punt: TOOLS Bash,Read,WebFetch. FINAL "What does the PR description say? Paste it here." → {"category":"tool_available_punt","reason":"WebFetch/gh could pull PR description","confidence":0.85}
+F — genuinely_stuck: FINAL "Continuing." → {"category":"genuinely_stuck","reason":"single-word non-closure","confidence":0.9}
+G — complete: FINAL "Ignored — stale monitor noise." → {"category":"complete","reason":"terse acknowledgement, no open action","confidence":0.85}
+H — summary_drift_stop: FINAL "1. Run tests. 2. Commit. 3. Open PR." → {"category":"summary_drift_stop","reason":"numbered execution plan the agent owns, no step taken","confidence":0.9}
+I — waiting_for_user_legitimate: FINAL "If you want, I can patch this now. Want me to?" → {"category":"waiting_for_user_legitimate","reason":"explicit permission request","confidence":0.8}
+J — tool_available_punt: TOOLS Bash,Read,Edit. FINAL "What does \`git status\` show in your worktree?" → {"category":"tool_available_punt","reason":"Bash could run git status","confidence":0.9}
+K — complete (background tasks running): FINAL "PR #1376 merged. 3 worktree agents still running (homepage CTA, bot one-tap, Sentry triage). Will report as they land." → {"category":"complete","reason":"PR shipped; pending agents are passive — agent is not actively doing more work this turn","confidence":0.85}
+L — complete (system error is delivery, not drift): FINAL "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment." → {"category":"complete","reason":"system status delivered, no agent action open","confidence":0.85}
+M — complete (subagent fan-out): FINAL "Subagent is running — probing RSS feeds and sitemaps. I'll share findings when it reports back." → {"category":"complete","reason":"dispatched subagent + passive wait, no claimed agent action this turn","confidence":0.85}
+N — complete ("I can do X" is offer, not commitment): FINAL "UI updated, tests pass. Next I can run the full pre-merge suite if you want." → {"category":"complete","reason":"work delivered + capability offer ('I can'), no committed next action","confidence":0.85}
+O — complete (present-tense process narration that delivers a finding): FINAL "I'm checking whether the blocked conclusion missed usable context. Looked at the last 3 turns — no missed context, conclusion stands." → {"category":"complete","reason":"present-tense narration that delivered a concrete finding","confidence":0.85}
+P — complete (next-steps list as user hand-off, no "I will"): FINAL "Shipped. Next steps for you: 1. Verify in staging 2. Roll out to prod 3. Monitor error rate." → {"category":"complete","reason":"next-steps list directed at user, no agent commitment","confidence":0.9}
+Q — summary_drift_stop ("Let me now" + cut-off mid-action, NO closing result): FINAL "Let me apply all 3 fixes now. First I need to update auth.ts... Now I need to add the validation step..." → {"category":"summary_drift_stop","reason":"committed action ('Let me') + mid-action with no closing result","confidence":0.9}
+R — complete (multi-step process narration that ENDS with delivery — closing dominates): FINAL "Let me read the file. Now let me check the webhook URL. Let me apply all 3 fixes. ... All 1241 unit tests pass, TypeScript compiles clean. Fixes committed and pushed to PR #1043." → {"category":"complete","reason":"closing delivery (tests pass + PR pushed) overrides intermediate 'Let me' phrases","confidence":0.9}
+S — complete (imperative guidance to user, not agent self-action): FINAL "Autocompact thrashing. Try reading in smaller chunks, or use /clear to start fresh." → {"category":"complete","reason":"imperative guidance directed at user, not agent commitment","confidence":0.9}
+T — complete (present-tense process narration ENDS with verdict — closing dominates): FINAL "I'm checking whether the blocked conclusion missed usable context. ... Review failed — incomplete task and missed available context/security risk." → {"category":"complete","reason":"checklist + verdict delivered; intermediate 'I'm checking' was process narration","confidence":0.9}
 
 Respond ONLY with a JSON object on a single line, no markdown fence, no prose:
-{"category": "<one of: complete | waiting_for_user_legitimate | tool_available_punt | summary_drift_stop | genuinely_stuck | working>", "reason": "<one short sentence citing the specific antipattern or evidence>", "confidence": <0.0-1.0>}`;
+{"category": "<one of: complete | waiting_for_user_legitimate | tool_available_punt | summary_drift_stop | genuinely_stuck | working>", "reason": "<one short sentence>", "confidence": <0.0-1.0>}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,22 +287,13 @@ export async function classifyStop(stopContext, opts = {}) {
   const model = opts.model ?? DEFAULT_MODEL;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  // Test escape hatch: REFLECTION_CC_FAKE_JUDGE=<category>:<confidence> (e.g.
-  // "summary_drift_stop:0.9") returns a hardcoded verdict without an API call.
-  // Only active when the env var is set — never in production.
-  const fakeJudge = process.env.REFLECTION_CC_FAKE_JUDGE;
-  if (fakeJudge) {
-    const [cat, conf] = fakeJudge.split(':');
-    const category = CATEGORIES.includes(cat) ? cat : 'complete';
-    return {
-      category,
-      reason: `[fake judge] ${fakeJudge}`,
-      confidence: parseFloat(conf ?? '0.9') || 0.9,
-    };
+  // Load token — throws "judge: ..." on failure (caller treats as no-inject)
+  let token;
+  try {
+    token = loadOAuthToken();
+  } catch (err) {
+    throw err; // already prefixed with "judge:"
   }
-
-  // Load auth — throws "judge: ..." on failure (caller treats as no-inject)
-  const auth = loadAuth();
 
   const prompt = buildPrompt(stopContext);
 
@@ -312,36 +304,30 @@ export async function classifyStop(stopContext, opts = {}) {
     messages: [{ role: 'user', content: prompt }],
   });
 
-  // Build request headers depending on auth type.
-  // - API key: x-api-key header, no beta header needed
-  // - OAuth:   Bearer token + anthropic-beta oauth header
-  const headers = {
-    'anthropic-version': ANTHROPIC_VERSION,
-    'content-type': 'application/json',
-  };
-  if (auth.type === 'apikey') {
-    headers['x-api-key'] = auth.value;
-  } else {
-    headers['authorization'] = `Bearer ${auth.value}`;
-    headers['anthropic-beta'] = ANTHROPIC_BETA;
-  }
-
   // Compose abort signal: hard timeout + optional caller signal
   const timeoutController = new AbortController();
   const timerId = setTimeout(() => timeoutController.abort(), timeoutMs);
 
   // Merge caller signal if provided
+  let signal = timeoutController.signal;
   if (opts.signal) {
+    // If either aborts, abort both
     opts.signal.addEventListener('abort', () => timeoutController.abort(), { once: true });
+    // We still use timeoutController.signal — it fires on timeout OR on opts.signal abort
   }
 
   let res;
   try {
     res = await fetch(API_URL, {
       method: 'POST',
-      headers,
+      headers: {
+        'anthropic-version': ANTHROPIC_VERSION,
+        'anthropic-beta': ANTHROPIC_BETA,
+        'authorization': `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
       body,
-      signal: timeoutController.signal,
+      signal,
     });
   } catch (err) {
     clearTimeout(timerId);

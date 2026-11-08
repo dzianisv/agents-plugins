@@ -1,8 +1,10 @@
 # One image for both runtimes: Node 20, bun, git, jq, Claude Code and opencode.
 FROM node:20-bookworm-slim
 
-# Pinned to the versions the checks were verified against (Claude Code 2.1.283, opencode 2.0.29).
-ARG OPENCODE_VERSION=2.0.29
+# Pinned to the versions the checks were verified against (Claude Code 2.1.283, opencode 2.2.5).
+# The opencode version must match the runtime in use: 2.2.5 resolves a plugin directory through its
+# package.json entry, so a package exporting the v1 file loaded here on 2.0.29 and failed in the app.
+ARG OPENCODE_VERSION=2.2.5
 ARG CLAUDE_CODE_VERSION=2.1.283
 
 RUN apt-get update \

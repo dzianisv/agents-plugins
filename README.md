@@ -34,17 +34,28 @@ We measured it: 143 real OpenCode + Claude Code sessions, 227 stops classified. 
 
 ---
 
-| Plugin | What it does |
-|--------|-------------|
-| **reflection-3.ts** | Judge layer — re-prompts agent when it stops prematurely |
-| **tts.ts** | TTS + Telegram notifications with two-way voice communication |
-| **opencode-auto-limit-nudge.ts** | Toasts the user when the active model hits a rate/usage limit (does not nudge the session on reset) |
-| **worktree-status.ts** | Git worktree status tool |
-| **packages/session-index** | Writes an LLM recap of each finished session into `~/.agents/sessions.csv` for cross-session lookup |
-| **packages/session-self-improve** | End-of-session retrospective that proposes where a fix, script or rule belongs, with approval |
-| **packages/turn-check** | After each turn, a cheap model checks the transcript against `~/.agents/AGENTS.md` and feeds violations back |
-| **packages/auto-review** | After each non-trivial turn, a second model reviews the work and reports gaps |
-| **packages/overhelm** | Prepends a short-reply, plain-English instruction from `~/.agents/overhelm.md` to every prompt |
+## Plugins
+
+Install shape for both runtimes:
+
+- **opencode** — add `"file:///abs/path/to/opencode-plugins/packages/<name>"` to `plugin` in `~/.config/opencode/opencode.json`, then restart opencode. In the table `opencode: <name>` means that package directory.
+- **Claude Code** — `claude plugin marketplace add dzianisv/opencode-plugins`, then `claude plugin install <claude-name>@opencode-plugins`.
+
+| Plugin | opencode | Claude Code | What it does | Install |
+|--------|:--------:|:-----------:|--------------|---------|
+| **reflection** (`packages/reflection`) | yes | no | Judge layer: after each turn it checks the task is really complete (tests, PR, CI) and re-prompts the agent when it stopped early. | opencode: `packages/reflection` |
+| **reflection-cc** (`claude/`) | no | yes | Claude Code `Stop` hook: re-prompts when the agent stopped prematurely. | Claude: `reflection-cc` |
+| **session-autoreflect** (`packages/session-autoreflect`) | yes | yes | Every 30 min of working time it injects a reflection prompt — what am I doing, goal, acceptance criteria, is it done, is the plan still right, faster path, can I unblock — and tells the agent to act on the answer. Idle sessions never fire. | opencode: `packages/session-autoreflect` · Claude: `session-autoreflect` |
+| **turn-check** (`packages/turn-check`) | yes | yes | After each turn, a cheap model audits the transcript against `~/.agents/AGENTS.md` and feeds violations back on the next message. | opencode: `packages/turn-check` · Claude: `turn-check` |
+| **task-gh-guard** (`packages/task-gh-guard`) | yes | yes | Blocks the end of a turn while GitHub CI for a commit this session pushed is red or still running; reviews git and GitHub writes against plain rules. | opencode: `packages/task-gh-guard` · Claude: `task-gh-guard` |
+| **auto-review** (`packages/auto-review`) | yes | no | After a substantive turn, a second model reviews the work and reports completion, test, and CI gaps. | opencode: `opencode-auto-review` (npm) or `packages/auto-review` |
+| **overhelm** (`packages/overhelm`) | yes | yes | Injects a short-reply, plain-English instruction into every prompt; one instruction file for both runtimes. | opencode: `packages/overhelm` · Claude: `overhelm` |
+| **session-self-improve** (`packages/session-self-improve`) | yes | yes | End-of-session retrospective: proposes where each lesson belongs (skill, AGENTS.md, memory, hook, command, subagent). Nothing written without approval. | opencode: `packages/session-self-improve` · Claude: `session-self-improve` |
+| **session-index** (`packages/session-index`) | yes | no | Writes a short LLM recap of each finished session into `~/.agents/sessions.csv` for cross-session lookup. | opencode: `packages/session-index` |
+| **tts** (`tts.ts`) | yes | no | Reads the final response aloud (macOS `say` or Coqui) when the agent finishes. | `./install.sh` or `npm run install:tts` |
+| **telegram** (`telegram.ts`) | yes | no | Two-way Telegram: posts task completion, takes text or voice replies (Whisper) back into the session. | `./install.sh` or `npm run install:telegram` |
+| **auto-limit-nudge** (`opencode-auto-limit-nudge.ts`) | yes | no | Toast when the active model hits a rate or usage limit. Does not nudge the session on reset. | `./install.sh` |
+| **worktree** (`worktree.ts`) | yes | no | Git worktree status tool: dirty state, branch, active sessions. | `./install.sh` |
 
 ## The problem in detail
 
@@ -56,18 +67,6 @@ The reflection plugin catches this by running a judge after every idle event. Th
 - **FALSE-COMPLETE**: claims done but no test commands ran → premature
 
 Implements [Reflexion](https://lilianweng.github.io/posts/2023-06-23-agent/) (Shinn et al. 2023): actor = coding agent, evaluator = LLM judge, verbal feedback injected back into context, max 3 retries. See [`docs/reflection.blog.md`](docs/reflection.blog.md) for the full technical writeup.
-
-| Plugin | Description |
-|--------|-------------|
-| **reflection-3.ts** | Judge layer that verifies task completion and forces agent to continue if incomplete |
-| **tts.ts** | Text-to-speech + Telegram notifications with two-way communication |
-| **opencode-auto-limit-nudge.ts** | Toasts the user when the active model hits a rate/usage limit; session retries on its own |
-| **worktree-status.ts** | Git worktree status tool for checking dirty state, branch, and active sessions |
-| **packages/session-index** | Indexes finished sessions into `~/.agents/sessions.csv` with a short LLM recap, for lookup by later sessions |
-| **packages/session-self-improve** | Proposes where a session's lessons belong: new or edited skill, AGENTS.md, memory, hook, command or subagent |
-| **packages/turn-check** | Audits each finished turn against the user's AGENTS.md rules and returns a short violation list |
-| **packages/auto-review** | Runs a second model over each substantive turn and reports completion, test, and CI gaps |
-| **packages/overhelm** | Injects the user's brevity instruction into every prompt; shared file with the Claude Code hook |
 
 ### Key Features
 

@@ -1,0 +1,38 @@
+{
+  "description": "After 30 minutes of work in a session, inject a reflection prompt and tell the agent to act on it. Idle sessions are never touched.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/claude/autoreflect.py\" post-tool",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/claude/autoreflect.py\" stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/claude/autoreflect.py\" session-start",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

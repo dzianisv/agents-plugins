@@ -20,9 +20,9 @@ async function reportError(err: unknown, context?: Record<string, string>): Prom
   } catch {}
 }
 
-const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
-const FEEDBACK_MARKER = "## Reflection-3:"
-const MAX_ATTEMPTS = 3
+export const SELF_ASSESSMENT_MARKER = "## Reflection-3 Self-Assessment"
+export const FEEDBACK_MARKER = "## Reflection-3:"
+export const MAX_ATTEMPTS = 3
 
 const JUDGE_BLOCKED_PATTERNS = [
   /\bhaiku\b/i,
@@ -39,11 +39,11 @@ const PLANNING_LOOP_WRITE_RATIO_THRESHOLD = 0.1
 const ACTION_LOOP_MIN_COMMANDS = 4
 const ACTION_LOOP_REPETITION_THRESHOLD = 0.6
 
-type TaskType = "coding" | "docs" | "research" | "ops" | "other"
-type AgentMode = "plan" | "build" | "unknown"
-type RoutingCategory = "backend" | "architecture" | "frontend" | "default"
+export type TaskType = "coding" | "docs" | "research" | "ops" | "other"
+export type AgentMode = "plan" | "build" | "unknown"
+export type RoutingCategory = "backend" | "architecture" | "frontend" | "default"
 
-interface WorkflowRequirements {
+export interface WorkflowRequirements {
   requiresTests: boolean
   requiresBuild: boolean
   requiresPR: boolean
@@ -52,7 +52,7 @@ interface WorkflowRequirements {
   requiresLocalTestsEvidence: boolean
 }
 
-interface TaskContext extends WorkflowRequirements {
+export interface TaskContext extends WorkflowRequirements {
   taskSummary: string
   taskType: TaskType
   agentMode: AgentMode
@@ -63,7 +63,7 @@ interface TaskContext extends WorkflowRequirements {
   pushedToDefaultBranch: boolean
 }
 
-interface SelfAssessment {
+export interface SelfAssessment {
   task_summary?: string
   task_type?: string
   status?: "complete" | "in_progress" | "blocked" | "stuck" | "waiting_for_user"
@@ -95,7 +95,7 @@ interface SelfAssessment {
   alternate_approach?: string
 }
 
-interface ReflectionAnalysis {
+export interface ReflectionAnalysis {
   complete: boolean
   shouldContinue: boolean
   reason: string
@@ -105,12 +105,12 @@ interface ReflectionAnalysis {
   severity: "NONE" | "LOW" | "MEDIUM" | "HIGH" | "BLOCKER"
 }
 
-interface RoutingConfig {
+export interface RoutingConfig {
   enabled: boolean
   models: Record<RoutingCategory, string>
 }
 
-interface ModelSpecParts {
+export interface ModelSpecParts {
   providerID: string
   modelID: string
 }
@@ -137,9 +137,9 @@ const REFLECTION_DEBUG = process.env.REFLECTION_DEBUG === "1"
 
 // Module-level debug function, initially a no-op.
 // Replaced with a file-backed logger once the plugin initializes with a directory.
-let debug: (...args: any[]) => void = () => {}
+export let debug: (...args: any[]) => void = () => {}
 
-function initDebugLogger(directory: string) {
+export function initDebugLogger(directory: string) {
   if (!REFLECTION_DEBUG) return
   const logPath = join(directory, ".reflection", "debug.log")
   let dirEnsured = false
@@ -158,7 +158,7 @@ function initDebugLogger(directory: string) {
   }
 }
 
-function isBlockedJudgeModel(modelSpec: string): boolean {
+export function isBlockedJudgeModel(modelSpec: string): boolean {
   const normalized = modelSpec.toLowerCase()
   return JUDGE_BLOCKED_PATTERNS.some((pattern) => pattern.test(normalized))
 }
@@ -169,7 +169,7 @@ function stripJsonComments(input: string): string {
     .replace(/(^|\s)\/\/.*$/gm, "$1")
 }
 
-async function loadPreferredModelSpec(directory: string): Promise<string | null> {
+export async function loadPreferredModelSpec(directory: string): Promise<string | null> {
   const candidates = [
     join(directory, "opencode.json"),
     join(directory, ".opencode", "opencode.json"),
@@ -192,7 +192,7 @@ async function loadPreferredModelSpec(directory: string): Promise<string | null>
   return null
 }
 
-async function loadReflectionPrompt(directory: string): Promise<string | null> {
+export async function loadReflectionPrompt(directory: string): Promise<string | null> {
   const candidates = [".reflection.md", ".reflection.MD", "reflection.md", "reflection.MD"]
   for (const name of candidates) {
     try {
@@ -205,12 +205,12 @@ async function loadReflectionPrompt(directory: string): Promise<string | null> {
   return null
 }
 
-function buildToolReflectionGuidanceSection(toolReflectionPrompt: string | null): string {
+export function buildToolReflectionGuidanceSection(toolReflectionPrompt: string | null): string {
   if (!toolReflectionPrompt) return ""
   return `\n## Tool Reflection Guidance\n${toolReflectionPrompt.slice(0, 4000)}\n`
 }
 
-function resolveReflectionPromptPrecedence(
+export function resolveReflectionPromptPrecedence(
   filePrompt: string | null,
   toolReflectionPrompt: string | null,
   defaultPrompt: string
@@ -236,7 +236,7 @@ function resolveReflectionPromptPrecedence(
   }
 }
 
-async function getAgentsFile(directory: string): Promise<string> {
+export async function getAgentsFile(directory: string): Promise<string> {
   for (const name of ["AGENTS.md", ".opencode/AGENTS.md", "agents.md"]) {
     try {
       const content = await readFile(join(directory, name), "utf-8")
@@ -246,7 +246,7 @@ async function getAgentsFile(directory: string): Promise<string> {
   return ""
 }
 
-function getMessageSignature(msg: any): string {
+export function getMessageSignature(msg: any): string {
   if (msg.id) return msg.id
   const role = msg.info?.role || "unknown"
   const time = msg.info?.time?.start || 0
@@ -446,7 +446,7 @@ If you cannot complete the remaining items:
 Do NOT re-read files or re-plan. Either implement the fix now or explain why you cannot.`
 }
 
-function getLastRelevantUserMessageId(messages: any[]): string | null {
+export function getLastRelevantUserMessageId(messages: any[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
     if (msg.info?.role === "user") {
@@ -465,7 +465,7 @@ function getLastRelevantUserMessageId(messages: any[]): string | null {
   return null
 }
 
-function isJudgeSession(sessionId: string, messages: any[], judgeSessionIds: Set<string>): boolean {
+export function isJudgeSession(sessionId: string, messages: any[], judgeSessionIds: Set<string>): boolean {
   if (judgeSessionIds.has(sessionId)) return true
   for (const msg of messages) {
     for (const part of msg.parts || []) {
@@ -641,7 +641,7 @@ function parseRoutingFromYaml(content: string): RoutingConfig {
 }
 
 
-function parseRoutingCategory(text: string | null | undefined): RoutingCategory | null {
+export function parseRoutingCategory(text: string | null | undefined): RoutingCategory | null {
   if (typeof text !== "string") return null
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -662,7 +662,7 @@ function parseRoutingCategory(text: string | null | undefined): RoutingCategory 
   return null
 }
 
-function parseModelSpec(modelSpec: string | null | undefined): ModelSpecParts | null {
+export function parseModelSpec(modelSpec: string | null | undefined): ModelSpecParts | null {
   if (typeof modelSpec !== "string") return null
   const trimmed = modelSpec.trim()
   if (!trimmed) return null
@@ -687,7 +687,7 @@ function getGitHubCopilotModelForRouting(modelSpec: string | null | undefined): 
   return null
 }
 
-function getCrossReviewModelSpec(modelSpec: string | null | undefined): string | null {
+export function getCrossReviewModelSpec(modelSpec: string | null | undefined): string | null {
   const parsed = parseModelSpec(modelSpec)
   if (!parsed) return null
   const modelID = parsed.modelID.toLowerCase()
@@ -762,7 +762,7 @@ async function classifyTaskForRoutingWithLLM(
   return null
 }
 
-async function loadRoutingConfig(): Promise<RoutingConfig> {
+export async function loadRoutingConfig(): Promise<RoutingConfig> {
   try {
     const content = await readFile(REFLECTION_CONFIG_PATH, "utf-8")
     return parseRoutingFromYaml(content)
@@ -771,7 +771,7 @@ async function loadRoutingConfig(): Promise<RoutingConfig> {
   }
 }
 
-function getRoutingModel(config: RoutingConfig, category: RoutingCategory | null): { providerID: string; modelID: string } | null {
+export function getRoutingModel(config: RoutingConfig, category: RoutingCategory | null): { providerID: string; modelID: string } | null {
   if (!category) return null
   if (!config.enabled) return null
   const modelSpec = config.models[category] || config.models["default"] || ""
@@ -783,7 +783,7 @@ function getRoutingModel(config: RoutingConfig, category: RoutingCategory | null
   return { providerID, modelID }
 }
 
-async function loadReflectionModelList(): Promise<string[]> {
+export async function loadReflectionModelList(): Promise<string[]> {
   try {
     const content = await readFile(REFLECTION_CONFIG_PATH, "utf-8")
     const models = parseModelListFromYaml(content)
@@ -801,7 +801,7 @@ async function loadReflectionModelList(): Promise<string[]> {
   }
 }
 
-async function ensureReflectionDir(directory: string): Promise<string> {
+export async function ensureReflectionDir(directory: string): Promise<string> {
   const reflectionDir = join(directory, ".reflection")
   try {
     await mkdir(reflectionDir, { recursive: true })
@@ -809,7 +809,7 @@ async function ensureReflectionDir(directory: string): Promise<string> {
   return reflectionDir
 }
 
-async function writeVerdictSignal(directory: string, sessionId: string, complete: boolean, severity: string): Promise<void> {
+export async function writeVerdictSignal(directory: string, sessionId: string, complete: boolean, severity: string): Promise<void> {
   const reflectionDir = await ensureReflectionDir(directory)
   const signalPath = join(reflectionDir, `verdict_${sessionId.slice(0, 8)}.json`)
   const signal = {
@@ -827,7 +827,7 @@ async function writeVerdictSignal(directory: string, sessionId: string, complete
   }
 }
 
-async function saveReflectionData(directory: string, sessionId: string, data: any): Promise<void> {
+export async function saveReflectionData(directory: string, sessionId: string, data: any): Promise<void> {
   const reflectionDir = await ensureReflectionDir(directory)
   const filename = `${sessionId.slice(0, 8)}_${Date.now()}.json`
   const filepath = join(reflectionDir, filename)
@@ -969,7 +969,7 @@ function pushedToDefaultBranch(commands: string[]): boolean {
   )
 }
 
-async function buildTaskContext(messages: any[], directory: string): Promise<TaskContext | null> {
+export async function buildTaskContext(messages: any[], directory: string): Promise<TaskContext | null> {
   if (!Array.isArray(messages)) return null
   const humanMessages: string[] = []
   let lastAssistantText = ""
@@ -1038,7 +1038,7 @@ async function buildTaskContext(messages: any[], directory: string): Promise<Tas
   }
 }
 
-function extractLastAssistantText(messages: any[]): string {
+export function extractLastAssistantText(messages: any[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i]
     if (msg.info?.role === "assistant") {
@@ -1050,7 +1050,7 @@ function extractLastAssistantText(messages: any[]): string {
   return ""
 }
 
-function buildSelfAssessmentPrompt(
+export function buildSelfAssessmentPrompt(
   context: TaskContext,
   agents: string,
   lastAssistantText?: string,
@@ -1145,7 +1145,7 @@ PREMATURE-STOP ANTIPATTERNS (mined from 227 real agent stops where the user repl
 - SEVERITY/STUCK: a single recoverable technical snag mid-task (knows the fix) is not "stuck". But a policy/process violation — pushing to main when a PR was required, skipping mandated tests — is a real failure: status "in_progress" with the corrective action in remaining_work, never "complete".`
 }
 
-function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
+export function parseSelfAssessmentJson(text: string | null | undefined): SelfAssessment | null {
   if (typeof text !== "string") return null
   const jsonMatch = text.match(/\{[\s\S]*\}/)
   if (!jsonMatch) return null
@@ -1171,7 +1171,7 @@ const AGENT_ACTION_PATTERNS: RegExp[] = [
   /\b(edit|write|update|fix|implement|add|remove|change|create|open|verify|capture|screenshot|record)\b/i
 ]
 
-function isHumanOnlyAction(item: string): boolean {
+export function isHumanOnlyAction(item: string): boolean {
   const text = item.trim()
   if (!text) return false
   const hasHuman = HUMAN_ONLY_ACTION_PATTERNS.some(pattern => pattern.test(text))
@@ -1192,7 +1192,7 @@ function splitActionItems(items: string[]): { humanOnly: string[]; agentActionab
   return { humanOnly, agentActionable }
 }
 
-function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext): ReflectionAnalysis {
+export function evaluateSelfAssessment(assessment: SelfAssessment, context: TaskContext): ReflectionAnalysis {
   const safeContext: TaskContext = {
     taskSummary: context?.taskSummary || "",
     taskType: context?.taskType || "other",

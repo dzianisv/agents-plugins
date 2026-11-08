@@ -6,8 +6,9 @@
   "main": "auto-review.ts",
   "exports": {
     ".": "./index.ts",
-    "./server": "./index.ts"
+    "./server": "./server.ts"
   },
+  "files": ["server.ts", "core.ts", "auto-review.ts", "index.ts", "auto-review.example.json"],
   "keywords": ["opencode", "plugin", "auto-review", "code-review", "ai"],
   "author": "dzianisv",
   "license": "MIT",

@@ -60,16 +60,12 @@ Every spec asserts: the plugin loaded (above), the runtime exited 0, and no `not
 | overhelm | claude, opencode | Setup writes a marker instruction into `~/.agents/overhelm.md`; the prompt asks the model to repeat its standing instructions, so the marker appearing in the run output proves the injection ran |
 | session-index | opencode | The spec env shortens `OPENCODE_SESSION_INDEX_IDLE_MS`; after the run the row for the session (its folder is the run cwd) is polled for in `~/.agents/sessions.csv` |
 | session-self-improve | claude, opencode | The prompt carries a `from now on` rule cue; a queue record with kinds `["rule"]` appears under `~/.claude/session-self-improve/queue` (Claude Code) or `~/.cache/session-self-improve/queue` (opencode) |
-| auto-review | opencode | The plugin loads (the shared `opencodeLoadedCheck`); the review needs a long turn and opencode 2.0.29 does not emit `session.idle` |
-| reflection | opencode | The plugin loads (shared `opencodeLoadedCheck`) and the run exits 0; the reflection flow needs a real task |
+| auto-review | opencode | The plugin loads (the shared `opencodeLoadedCheck`); the review needs a non-trivial turn (>= 3 tool calls) and a second available model, neither of which the cheap prompt has |
+| reflection | opencode | The plugin loads (shared `opencodeLoadedCheck`) and the run exits 0; a cheap prompt has no real task for the judge to assess |
 
 When a README does not make the effect clear, assert "loaded" and the clean exit, and say in the spec file header why nothing stronger is asserted.
 
-Known (2026-11-07): `auto-review` and `reflection` ship opencode v1 entries only. The 2.0.29 loader
-requires the default export to be `{ id, effect }` or `{ id, setup }`; auto-review exports
-`{ id, server }` and reflection exports a bare function, so opencode logs `failed to load plugin`
-(at WARN, which the loaded check now treats as a failure) and the two specs leave their load checks
-failing. Each package needs a v2 `server.ts` (or a wrapped default export) before it can pass.
+Resolved (2026-11-07): `auto-review` and `reflection` now ship v2 `server.ts` entries (`{ id, setup }`) and their opencode cases are green. auto-review reviews on the `session.execution.*` events and creates the review session with `ctx.session.create`; reflection judges each finished turn through `ctx.generate.text` and pushes feedback with `ctx.session.prompt`. Both keep only the load check, because the review needs a non-trivial turn and a second model and the reflection judge needs a real task, and the cheap prompt supplies neither.
 
 Resolved (2026-11-07): the task-gh-guard opencode case is green. `server.ts` registers `execute.before` and reviews the write, so `review.jsonl` and `~/.agents/plugins/task-gh-guard/{model,rules}` are written on 2.0.29 too. A throw in `execute.before` blocks the tool call and the message reaches the model (verified with a scratch plugin); no deny case is in the spec because a real judge deny is not deterministic.
 

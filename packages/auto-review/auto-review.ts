@@ -1,248 +1,27 @@
-import { appendFile, mkdir, readFile } from "fs/promises"
-import { join, dirname } from "path"
-import { homedir } from "os"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
-
-// Config file: ~/.config/opencode/plugin/auto-review.json
-// {
-//   "model": "github-copilot/gpt-5.5",
-//   "reasoning": "xhigh",
-//   "minToolCalls": 3,
-//   "debug": true
-// }
-type AutoReviewConfig = {
-  model?: string
-  reasoning?: string
-  minToolCalls?: number
-  debug?: boolean
-}
-
-async function loadConfig(): Promise<AutoReviewConfig> {
-  const configPath = join(homedir(), ".config", "opencode", "plugin", "auto-review.json")
-  try {
-    const raw = await readFile(configPath, "utf-8")
-    return JSON.parse(raw) as AutoReviewConfig
-  } catch {
-    return {}
-  }
-}
+import {
+  ABORT_COOLDOWN,
+  ABORT_RACE_DELAY,
+  type ModelSpec,
+  type SessionInfo,
+  type SessionMessage,
+  buildReviewPrompt,
+  countToolCallsAfterIndex,
+  debug,
+  extractText,
+  findLastAssistantAfterIndex,
+  findLastRelevantUserBoundaryIndex,
+  formatModelSpec,
+  getMessageSignature,
+  hasReviewMarker,
+  inferReviewModels,
+  initDebugLogger,
+  loadConfig,
+  parseModelSpec,
+  resolveWorkModel,
+} from "./core"
 
 const configPromise = loadConfig()
-
-const ABORT_COOLDOWN = 10_000
-const ABORT_RACE_DELAY = 1_500
-
-const REVIEW_MARKERS = [
-  "AUTO-REVIEW",
-  "AUTO REVIEW",
-  "REVIEW AUTO-REVIEW",
-  "Review another model's work",
-  "You are reviewing another session",
-]
-const SELF_ASSESSMENT_MARKER = "SELF-ASSESS REFLECTION-3"
-const FEEDBACK_MARKER = "REFLECTION FEEDBACK"
-
-type SessionInfo = {
-  id?: string
-  parentID?: string
-  directory?: string
-}
-
-type SessionPart = {
-  type?: string
-  text?: string
-  tool?: string
-  state?: {
-    input?: Record<string, unknown>
-  }
-}
-
-type SessionMessage = {
-  id?: string
-  info?: {
-    role?: string
-    providerID?: string
-    modelID?: string
-    model?: string | { providerID?: string; modelID?: string }
-    time?: {
-      start?: number
-    }
-  }
-  parts?: SessionPart[]
-}
-
-type ModelSpec = {
-  providerID: string
-  modelID: string
-}
-
-let debug: (...args: unknown[]) => void = () => {}
-
-function initDebugLogger(directory: string, enabled: boolean): void {
-  if (!enabled) return
-  const logDir = join(directory, ".reflection")
-  const logPath = join(logDir, "debug.log")
-  let dirReady = false
-
-  debug = (...args: unknown[]) => {
-    const msg = args
-      .map((arg) => {
-        if (typeof arg === "string") return arg
-        try {
-          return JSON.stringify(arg)
-        } catch {
-          return String(arg)
-        }
-      })
-      .join(" ")
-    const line = `[${new Date().toISOString()}] [AutoReview] ${msg}\n`
-    ;(async () => {
-      if (!dirReady) {
-        try {
-          await mkdir(logDir, { recursive: true })
-        } catch {}
-        dirReady = true
-      }
-      try {
-        await appendFile(logPath, line)
-      } catch {}
-    })()
-  }
-}
-
-function parseModelSpec(spec: string | null | undefined): ModelSpec | null {
-  if (typeof spec !== "string") return null
-  const trimmed = spec.trim()
-  if (!trimmed) return null
-  const parts = trimmed.split("/")
-  if (parts.length < 2) return null
-  const providerID = parts[0] || ""
-  const modelID = parts.slice(1).join("/") || ""
-  if (!providerID || !modelID) return null
-  return { providerID, modelID }
-}
-
-function formatModelSpec(model: ModelSpec | null): string {
-  if (!model) return ""
-  return `${model.providerID}/${model.modelID}`
-}
-
-function resolveWorkModel(lastAssistant: SessionMessage | undefined): ModelSpec | null {
-  if (!lastAssistant?.info) return null
-  const directProvider = lastAssistant.info.providerID
-  const directModel = lastAssistant.info.modelID
-  if (typeof directProvider === "string" && typeof directModel === "string" && directProvider && directModel) {
-    return { providerID: directProvider, modelID: directModel }
-  }
-
-  if (typeof lastAssistant.info.model === "string") {
-    return parseModelSpec(lastAssistant.info.model)
-  }
-
-  if (lastAssistant.info.model && typeof lastAssistant.info.model === "object") {
-    const providerID = lastAssistant.info.model.providerID
-    const modelID = lastAssistant.info.model.modelID
-    if (providerID && modelID) return { providerID, modelID }
-  }
-
-  return null
-}
-
-function inferReviewModels(workModel: ModelSpec | null, availableModels: ModelSpec[]): ModelSpec[] {
-  const workSpec = formatModelSpec(workModel).toLowerCase()
-
-  // Prefer a different model family for cross-review
-  const isClaude = (m: ModelSpec) => m.modelID.toLowerCase().includes("claude")
-  const isGpt = (m: ModelSpec) => m.modelID.toLowerCase().includes("gpt") || m.modelID.toLowerCase().includes("codex")
-  const isGemini = (m: ModelSpec) => m.modelID.toLowerCase().includes("gemini")
-
-  // Sort candidates: prefer different family, then by capability (opus > sonnet > others)
-  const candidates = availableModels
-    .filter((m) => formatModelSpec(m).toLowerCase() !== workSpec)
-    .filter((m) => !m.modelID.toLowerCase().includes("haiku") && !m.modelID.toLowerCase().includes("flash"))
-
-  const differentFamily = candidates.filter((m) => {
-    if (workModel && isClaude(workModel)) return !isClaude(m)
-    if (workModel && isGpt(workModel)) return !isGpt(m)
-    if (workModel && isGemini(workModel)) return !isGemini(m)
-    return true
-  })
-
-  const sameFamily = candidates.filter((m) => !differentFamily.includes(m))
-
-  // Prefer opus/strong models first
-  const rank = (m: ModelSpec) => {
-    const id = m.modelID.toLowerCase()
-    if (id.includes("opus")) return 0
-    if (id.includes("codex")) return 1
-    if (id.includes("sonnet")) return 2
-    if (id.includes("pro")) return 3
-    return 4
-  }
-
-  differentFamily.sort((a, b) => rank(a) - rank(b))
-  sameFamily.sort((a, b) => rank(a) - rank(b))
-
-  return [...differentFamily, ...sameFamily]
-}
-
-function extractText(msg: SessionMessage): string {
-  const texts = (msg.parts || [])
-    .filter((part) => part.type === "text" && typeof part.text === "string")
-    .map((part) => part.text || "")
-  return texts.join("\n").trim()
-}
-
-function hasReviewMarker(text: string): boolean {
-  const normalized = text.toLowerCase()
-  return REVIEW_MARKERS.some((marker) => normalized.includes(marker.toLowerCase()))
-}
-
-function countToolCalls(messages: SessionMessage[]): number {
-  let toolCalls = 0
-  for (const msg of messages) {
-    if (msg.info?.role !== "assistant") continue
-    for (const part of msg.parts || []) {
-      if (part.type === "tool") toolCalls++
-    }
-  }
-  return toolCalls
-}
-
-function isRelevantUserBoundary(msg: SessionMessage): boolean {
-  if (msg.info?.role !== "user") return false
-  const text = extractText(msg)
-  if (!text) return false
-  if (hasReviewMarker(text)) return false
-  if (text.includes(SELF_ASSESSMENT_MARKER) || text.includes(FEEDBACK_MARKER)) return false
-  return true
-}
-
-function findLastRelevantUserBoundaryIndex(messages: SessionMessage[]): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (isRelevantUserBoundary(messages[i])) return i
-  }
-  return -1
-}
-
-function findLastAssistantAfterIndex(messages: SessionMessage[], boundaryIndex: number): SessionMessage | undefined {
-  for (let i = messages.length - 1; i > boundaryIndex; i--) {
-    if (messages[i]?.info?.role === "assistant") return messages[i]
-  }
-  return undefined
-}
-
-function countToolCallsAfterIndex(messages: SessionMessage[], boundaryIndex: number): number {
-  return countToolCalls(messages.slice(boundaryIndex + 1))
-}
-
-function getMessageSignature(msg: SessionMessage | undefined): string {
-  if (!msg) return ""
-  if (msg.id) return msg.id
-  const role = msg.info?.role || "unknown"
-  const time = msg.info?.time?.start || 0
-  return `${role}:${time}:${extractText(msg).slice(0, 40)}`
-}
 
 export const AutoReviewPlugin: Plugin = async ({ client, directory }: PluginInput) => {
   const config = await configPromise
@@ -375,7 +154,7 @@ export const AutoReviewPlugin: Plugin = async ({ client, directory }: PluginInpu
 
       let reviewCompleted = false
       for (const reviewModel of reviewModels) {
-        const reviewPrompt = `AUTO-REVIEW\n\nYou are reviewing another model's just-completed task turn.\nValidate completion quality and workflow gates, then report concrete risks only.\n\nRules:\n- Scope review to work after the last relevant user message.\n- Do not repeat the task.\n- Focus on correctness, verification evidence, and missed edge cases.\n\nObserved model: ${workModelText}\nReview model: ${formatModelSpec(reviewModel)}\nTool calls in scoped turn: ${toolCalls}\n\nLast relevant user message:\n${lastUserText.slice(0, 2000) || "(none)"}\n\nLast assistant message in scoped turn:\n${lastAssistantText.slice(0, 3000) || "(none)"}\n\nChecklist to validate:\n- task completion\n- tests run/pass\n- PR exists if code changes were made\n- CI passed if applicable\n- obvious issues / bugs / missed edge cases\n\nReturn:\n1) Checklist with PASS/FAIL/UNKNOWN and brief evidence\n2) Issues (only real gaps)\n3) Final line exactly one of:\n   - Review passed — no issues found.\n   - Review failed — <brief reason>.`
+        const reviewPrompt = buildReviewPrompt(workModelText, formatModelSpec(reviewModel), toolCalls, lastUserText, lastAssistantText)
         try {
           await client.session.promptAsync({
             path: { id: reviewSession.id },

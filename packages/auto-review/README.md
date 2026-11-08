@@ -18,6 +18,13 @@ cp packages/auto-review/auto-review.ts ~/.config/opencode/plugin/
 
 Restart `opencode` or `opencode-serve` — the plugin is auto-discovered.
 
+For OpenCode v2, add the package directory to `plugins` in `~/.config/opencode/opencode.json`; v2 loads
+`server.ts` from that directory:
+
+```json
+{ "plugins": ["/path/to/agents-plugins/packages/auto-review"] }
+```
+
 ### Option B: Clone the repo
 
 ```bash
@@ -69,17 +76,27 @@ When `model` is not set, the plugin automatically:
 
 ## How It Works
 
-1. Listens for `session.idle` events (fired when the AI finishes a turn)
-2. Waits 1.5s to ensure the session wasn't aborted
-3. Validates the turn had meaningful work (≥3 tool calls)
-4. Creates a child review session
-5. Sends a structured review prompt to the review model
-6. The review checks: task completion, tests, PR existence, CI, edge cases
-7. Reports: PASS/FAIL checklist with evidence
+1. Listens for `session.execution.succeeded` / `failed` / `interrupted` events (v2) or the v1 `session.idle` event (fired when the AI finishes a turn)
+2. Validates the turn had meaningful work (≥3 tool calls)
+3. Creates a child review session with the review model
+4. Sends a structured review prompt to the review model
+5. The review checks: task completion, tests, PR existence, CI, edge cases
+6. Reports: PASS/FAIL checklist with evidence
+
+## Entries
+
+Two entrypoints share the logic in [`core.ts`](./core.ts):
+
+- **opencode v2** — [`server.ts`](./server.ts), a `{ id, setup(ctx) }` definition. v2 loads only this file.
+  It reviews on `session.execution.*` and creates the review session through `ctx.session.create`.
+- **opencode v1** — [`auto-review.ts`](./auto-review.ts), the original `Plugin` factory.
+
+The v2 entry does not port the v1 abort cooldown/race delay (keyed off `session.error`); v2 reports turn
+outcomes as execution events, and that cooldown only guarded the `session.idle` / abort race.
 
 ## What Gets Skipped
 
-- Aborted/cancelled sessions (recent ESC/abort within 10s)
+- Aborted/cancelled sessions (recent ESC/abort within 10s) — v1 only; see Entries
 - Child sessions (avoids reviewing reviews)
 - Trivial interactions (fewer than 3 tool calls)
 - Already-reviewed messages (deduplication by message signature)
@@ -104,7 +121,7 @@ The review child session produces a structured report like:
 
 ## Compatibility
 
-- OpenCode v1 with plugin support. v2 does not emit `session.idle`, so use `packages/turn-check` there.
+- OpenCode v1 (`auto-review.ts`, `session.idle`) and OpenCode v2 (`server.ts`, `session.execution.*`).
 - Requires `@opencode-ai/plugin` and `@opencode-ai/sdk` (bundled with opencode)
 - Works with any model provider configured in opencode (GitHub Copilot, Anthropic, OpenAI, Google, etc.)
 

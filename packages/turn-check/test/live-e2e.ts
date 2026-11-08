@@ -1,7 +1,8 @@
 import { createOpencode } from "@opencode-ai/sdk"
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { DEFAULT_MODEL, parseModel } from "../opencode/core"
+import { parseModel } from "../src/core/opencode"
+import { DEFAULT_MODEL } from "../src/core/prompt"
 
 const LOG = `${homedir()}/.cache/supervisor/audits.jsonl`
 const auditFor = (sessionID: string) =>

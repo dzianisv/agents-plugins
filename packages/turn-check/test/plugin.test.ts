@@ -8,12 +8,14 @@ const rules = join(dir, "AGENTS.md")
 writeFileSync(rules, "Replies max 6 lines.")
 process.env.SUPERVISOR_RULES = rules
 process.env.HOME = dir
+process.env.AGENTS_NOTIFY_CMD = "true"
+process.env.AGENTS_NOTIFY_STATE_DIR = join(dir, "notify")
 process.env.SUPERVISOR_HOME = join(dir, "state")
 const auditLog = join(dir, "state", "audits.jsonl")
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
-const { Supervisor } = await import("../opencode/plugin")
+const { Supervisor } = await import("../src/opencode/plugin")
 
 const conversation = [
   { info: { id: "m1", role: "user", sessionID: "s1" }, parts: [{ type: "text", text: "status?" }] },
@@ -138,14 +140,16 @@ test("child sessions are never audited", async () => {
   expect(calls.created).toHaveLength(0)
 })
 
-test("an unparseable reply is ignored without throwing, and the same state is retried on the next idle", async () => {
+test("an unparseable reply raises an error toast without throwing, and the same state is retried on the next idle", async () => {
   const pass = '{"verdict":"PASS","violations":[]}'
   const { client, calls } = fakeClient({ replies: ["looks fine to me", pass] })
   const hooks: any = await Supervisor({ client } as any)
   const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "s3" } } })
   await idle()
   await waitFor(() => calls.deleted.length === 1)
-  expect(calls.toast).toHaveLength(0)
+  await waitFor(() => calls.toast.length > 0)
+  expect(calls.toast[0].body).toMatchObject({ title: "turn-check", variant: "error" })
+  expect(calls.toast[0].body.message).toContain("unparseable verdict")
   await idle()
   await waitFor(() => calls.deleted.length === 2)
   expect(calls.prompt).toHaveLength(2)
@@ -318,7 +322,11 @@ describe("audit log", () => {
     await hooks.event({ event: { type: "session.idle", properties: { sessionID: "l1" } } })
     await waitFor(() => calls.deleted.length > 0)
     await waitFor(() => existsSync(auditLog) && readFileSync(auditLog, "utf8").includes("l1"))
-    const entry = readFileSync(auditLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)).find((e) => e.sessionID === "l1")
+    const entry = readFileSync(auditLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .find((e) => e.sessionID === "l1")
     expect(entry.error).toBe("unparseable verdict")
     expect(statSync(auditLog).mode & 0o777).toBe(0o600)
     expect(statSync(join(dir, "state")).mode & 0o777).toBe(0o700)
@@ -349,7 +357,9 @@ test("a hung judge is aborted at the timeout, its session deleted, and the turn 
     expect(calls.aborted).toEqual(["audit1"])
     await waitFor(() => calls.deleted.length > 0)
     expect(calls.deleted).toEqual(["audit1"])
-    expect(calls.toast).toHaveLength(0)
+    await waitFor(() => calls.toast.length > 0)
+    expect(calls.toast[0].body).toMatchObject({ variant: "error" })
+    expect(calls.toast[0].body.message).toContain("judge timed out")
     await idle()
     await waitFor(() => calls.deleted.length === 2)
     expect(calls.prompt).toHaveLength(2)
@@ -361,7 +371,12 @@ test("a hung judge is aborted at the timeout, its session deleted, and the turn 
 
 describe("startup cleanup of leftover audit sessions", () => {
   const minutes = (n: number) => Date.now() - n * 60000
-  const session = (id: string, title: string, ageMinutes: number, parentID: string | null = "parent") => ({ id, title, parentID, time: { created: minutes(ageMinutes), updated: minutes(ageMinutes) } })
+  const session = (id: string, title: string, ageMinutes: number, parentID: string | null = "parent") => ({
+    id,
+    title,
+    parentID,
+    time: { created: minutes(ageMinutes), updated: minutes(ageMinutes) },
+  })
 
   test("deletes only old child sessions titled exactly supervisor audit, never a top-level one", async () => {
     const { client, calls } = fakeClient({

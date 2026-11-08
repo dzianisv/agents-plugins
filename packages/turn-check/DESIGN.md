@@ -31,17 +31,17 @@ toast and are added as a note to your next message so the agent corrects course.
 
 ## Claude Code version
 
-Same auditor text, rules, truncation, verdict parsing and feedback text, ported to Python 3.9 (`claude/core.py`). State and log files are created 0600 in a 0700 directory.
+Same auditor text, rules, truncation, verdict parsing and feedback text, from the one TypeScript core in `src/core/` that both runtimes call. State and log files are created 0600 in a 0700 directory.
 
 | Step | What happens |
 |---|---|
-| `Stop` hook (`claude/stop.py`) | Skips if `SUPERVISOR_ENABLED=0`, `stop_hook_active`, `SUPERVISOR_CHILD=1` or no transcript. Otherwise starts `claude/audit.py` detached (`start_new_session`) and exits 0 with no output |
-| Audit child | Waits `SUPERVISOR_SETTLE_SECONDS`, takes a per-session lock. The check, stale-lock removal and creation run under a `flock` guard file, so two audits that find the same stale lock cannot both take it. A lock is released only by its owner. A Stop during a running audit sets a rerun flag; the running child audits again when it finishes |
-| Transcript | Parses the session JSONL: real user prompts (no tool results, `isMeta`, `<system-reminder>`, `<command-`, `<local-command`, `Caveat:`), assistant text, one line per tool call with its clipped result. Skips the audit if the agent did nothing after the last user message or the newest message uuid was already audited |
-| Judge | `opencode run --pure --format json --title "supervisor audit" --dir <temp dir> --model <model>` with the prompt (auditor text + rules + transcript) written to its stdin, so it never appears in `ps` or hits the argument limit, and with `OPENCODE_CONFIG_CONTENT={"permission":{"*":"deny"}}`, `SUPERVISOR_ENABLED=0`, `SUPERVISOR_CHILD=1`. `--pure` loads no plugins, so no recursion. Own process group, killed whole after `SUPERVISOR_JUDGE_TIMEOUT` (default 240 s). The reply is the joined `text` events of the JSON stream. `opencode run` saves a session with the full transcript, so afterwards the audit runs `opencode session delete <sessionID>` (id read from the JSON events, 20 s limit, failures ignored). If no event arrived (timeout, crash) it lists sessions (both `session` commands run with `--pure`) and deletes those titled exactly `supervisor audit`, created after this audit started, in this audit's temp directory. Other sessions are never touched |
-| Result | A valid verdict marks the message audited. PASS deletes `~/.cache/supervisor/pending/<session>.txt`; FAIL writes it. A failed or unparseable call is logged and retried on the next Stop |
-| `UserPromptSubmit` hook (`claude/prompt.py`) | If a pending file exists, prints `systemMessage` plus `additionalContext` (the feedback in a `<system-reminder>`) and deletes the file, so it is delivered once |
-| `SessionEnd` hook (`claude/session_end.py`) | Deletes the session's lock, rerun and state files, but keeps them while a live audit owns the lock (owner pid alive and mtime under 10 minutes); prunes pending and state files older than 7 days and audit log entries older than 30 days |
+| `Stop` hook (`src/claude/stop.ts`) | Skips if `SUPERVISOR_ENABLED=0`, `stop_hook_active`, `SUPERVISOR_CHILD=1` or no transcript. Otherwise starts `src/claude/audit.ts` detached with bun (own session, stdio ignored, `unref`) and exits 0 with no output |
+| Audit child (`src/claude/audit.ts`) | Waits `SUPERVISOR_SETTLE_SECONDS`, takes a per-session lock. The lock is created atomically (a hard link, so the pid is complete when it appears); a stale lock (owner gone or older than 10 minutes) is replaced under an exclusive claim that is re-checked while held, so two audits that find the same stale lock cannot both take it. A lock is released only by its owner. A Stop during a running audit sets a rerun flag; the running child audits again when it finishes |
+| Transcript (`src/core/transcript-claude.ts`) | Parses the session JSONL: real user prompts (no tool results, `isMeta`, `<system-reminder>`, `<command-`, `<local-command`, `Caveat:`), assistant text, one line per tool call with its clipped result. Skips the audit if the agent did nothing after the last user message or the newest message uuid was already audited |
+| Judge (`src/core/judge-cli.ts`) | `opencode run --format json --title "supervisor audit" --model <model>`, started in a temp dir, with the prompt (auditor text + rules + transcript) written to its stdin, so it never appears in `ps` or hits the argument limit, and with `OPENCODE_CONFIG_CONTENT={"permission":{"*":"deny"}}`, `SUPERVISOR_ENABLED=0`, `SUPERVISOR_CHILD=1`. A non-zero exit raises an error with the stderr text; every error is logged and leaves a `turn-check ERROR:` note for the next prompt. Own process group, killed whole after `SUPERVISOR_JUDGE_TIMEOUT` (default 240 s). The reply is the joined `text` events of the JSON stream. Afterwards the audit runs `opencode session delete <sessionID>` (id read from the JSON events, 20 s limit, failures ignored). If no event arrived, it lists sessions and deletes those titled exactly `supervisor audit`, created after this audit started, in this audit's temp directory. Other sessions are never touched |
+| Result (`src/core/audit.ts`) | A valid verdict marks the message audited. PASS deletes `~/.cache/supervisor/pending/<session>.txt`; FAIL writes it. A failed or unparseable call is logged and retried on the next Stop |
+| `UserPromptSubmit` hook (`src/claude/prompt.ts`) | If a pending file exists, prints `systemMessage` plus `additionalContext` (the feedback in a `<system-reminder>`) and deletes the file, so it is delivered once |
+| `SessionEnd` hook (`src/claude/session-end.ts`) | Deletes the session's lock, rerun and state files, but keeps them while a live audit owns the lock (owner pid alive and mtime under 10 minutes); prunes pending and state files older than 7 days and audit log entries older than 30 days |
 
 The audit costs one `opencode` start (a few seconds) per turn, off the hot path. The Stop hook never blocks or prompts the agent, so there is no fix loop.
 
@@ -56,7 +56,7 @@ from a transcript are ignored.
 - The judge sees the transcript, not the repo. Rules about repo state (CI green, changeset present)
   are only caught when the transcript shows the contrary. A `gh pr create` body is visible only
   when the heredoc is in the transcript or the `--body-file` path still exists at audit time.
-- Claude Code caps the whole prompt (auditor text, rules, transcript) at 400000 characters. Only when it is over, the oldest user messages are dropped first.
+- The whole prompt (auditor text, rules, transcript) is capped at 400000 characters in both runtimes. Only when it is over, the oldest user messages are dropped first.
 - Over `SUPERVISOR_MAX_CHARS` (default 60000) agent output is kept as one unbroken run ending at the newest message; older output is dropped. Every user message is always kept (each capped at 2000 characters), so the judge still sees every instruction.
 - The transcript is untrusted text. A message in it can try to instruct the judge; with all tools denied the worst case is a wrong verdict, not an action.
 - About 8k tokens of rules plus the transcript are sent per audit. A flash model keeps that cheap.
@@ -66,11 +66,18 @@ from a transcript are ignored.
 
 Auto-prompting the agent to fix itself (loop risk), blocking actions. Skipping audits in headless `claude -p`: the hooks docs list no field or variable that identifies those runs (`CLAUDE_CODE_REMOTE` only marks remote web sessions), so they still audit and the feedback goes unread.
 
-## Files
+## Layout
 
-`opencode/plugin.ts` wiring and hooks. `opencode/core.ts` pure functions (transcript, parsing,
-feedback). `test/core.test.ts` run with `bun test`.
+One TypeScript core (`src/core/`) holds the audit pipeline; the runtimes are thin adapters: Claude Code hook entrypoints in `src/claude/` (run with `bun` from `hooks/hooks.json`), the opencode v1 plugin in `src/opencode/`, and the v2 `server.ts`.
 
-Claude Code: `.claude-plugin/plugin.json`, `hooks/hooks.json`, `claude/{stop,audit,prompt,session_end}.py`,
-`claude/core.py` pure functions, `claude/state.py` files and lock, `claude/tests/` run with
-`python3 -m unittest discover -s claude/tests`.
+```mermaid
+flowchart LR
+  Stop["src/claude/stop.ts (Stop hook)"] -->|spawn detached| Child["src/claude/audit.ts"]
+  Child --> Core["src/core: audit.ts, prompt.ts, transcript-claude.ts, state.ts"]
+  Core --> Judge["src/core/judge-cli.ts: opencode run"]
+  Core --> Pending["pending/<session>.txt"]
+  Prompt["src/claude/prompt.ts (UserPromptSubmit)"] --> Pending
+  SessionEnd["src/claude/session-end.ts (SessionEnd)"] --> Core
+  V1["src/opencode/plugin.ts (opencode v1)"] --> Core
+  V2["server.ts (opencode v2)"] --> Core
+```

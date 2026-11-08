@@ -166,6 +166,16 @@ For debug/diagnostic logging, write to log files instead:
 
 Test files (`test/*.ts`) may use `console.log` for test output.
 
+### One TypeScript core for Claude Code and opencode
+
+- Write every plugin, in Claude Code hooks and in opencode plugins, in TypeScript. No Python, shell or other hook scripts.
+- A package keeps its logic in one core (`src/core/`) that both runtimes call. The core imports only `node:*` and `src/shared`, never Claude Code or opencode types.
+- Runtime code lives in thin adapters: `src/claude/<event>.ts` reads the hook JSON from stdin and prints the hook JSON, `src/opencode/plugin.ts` and `server.ts` wire the opencode hooks. Adapters translate and hold no business logic.
+- Claude Code hooks run with `bun`. In `hooks.json` use `PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin" bun "${CLAUDE_PLUGIN_ROOT}/src/claude/<event>.ts"`.
+- Code that more than one package needs goes in `packages/shared/src` and is linked into each package as `src/shared` with a symlink. Claude Code copies it into the plugin cache as real files.
+- A behavior fix goes in the core once and covers both runtimes. Tests run against the core with `bun test`.
+- When a plugin cannot do its job, say so loudly with `notify` from `src/shared/notify.ts` (desktop notification, plus a toast in opencode), not with console output.
+
 ### Always run tests before finishing
 
 Before considering any task complete, you MUST:

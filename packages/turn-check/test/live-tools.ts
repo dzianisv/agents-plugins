@@ -1,6 +1,7 @@
 import { createOpencode } from "@opencode-ai/sdk"
 import { existsSync, rmSync } from "node:fs"
-import { DEFAULT_MODEL, JUDGE_AGENT, judgeAgent, parseModel } from "../opencode/core"
+import { JUDGE_AGENT, judgeAgent, parseModel } from "../src/core/opencode"
+import { DEFAULT_MODEL } from "../src/core/prompt"
 
 const FILE = "/tmp/supervisor-tools-check.txt"
 const model = parseModel(process.env.SUPERVISOR_MODEL ?? DEFAULT_MODEL)

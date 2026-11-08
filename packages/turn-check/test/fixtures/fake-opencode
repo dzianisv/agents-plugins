@@ -1,0 +1,66 @@
+#!/usr/bin/env bun
+// Stand-in for the opencode CLI used by the judge tests. Modes via FAKE_MODE: reply (default),
+// hang, exit2, garbage, error. Sessions are kept in FAKE_SESSIONS; every call is appended to FAKE_LOG.
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
+import { realpathSync } from "node:fs"
+
+const args = process.argv.slice(2)
+const mode = process.env.FAKE_MODE ?? "reply"
+const log = process.env.FAKE_LOG
+const store = process.env.FAKE_SESSIONS
+if (!store) process.exit(1)
+
+const load = (): any[] => JSON.parse(readFileSync(store, "utf8"))
+const save = (sessions: any[]) => writeFileSync(store, JSON.stringify(sessions))
+const record = (extra: Record<string, unknown>) => {
+  if (log) appendFileSync(log, JSON.stringify({ argv: args, ...extra }) + "\n")
+}
+
+if (args[0] === "session") {
+  record({ cwd: process.cwd() })
+  const deleteMode = process.env.FAKE_DELETE_MODE
+  if (args[1] === "list") {
+    console.log(JSON.stringify(load()))
+  } else if (args[1] === "delete") {
+    if (deleteMode === "hang") await Bun.sleep(60000)
+    if (deleteMode === "fail") process.exit(1)
+    save(load().filter((s) => s.id !== args[2]))
+  }
+  process.exit(0)
+}
+
+record({
+  stdin: await Bun.stdin.text(),
+  config: process.env.OPENCODE_CONFIG_CONTENT,
+  enabled: process.env.SUPERVISOR_ENABLED,
+  child: process.env.SUPERVISOR_CHILD,
+  cwd: process.cwd(),
+})
+const sid = `ses_fake_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+save([
+  ...load(),
+  {
+    id: sid,
+    title: args.includes("--title") ? args[args.indexOf("--title") + 1] : "auto generated title",
+    created: Date.now(),
+    directory: realpathSync(process.cwd()),
+  },
+])
+const ids = process.env.FAKE_NO_SESSION_ID ? {} : { sessionID: sid }
+if (mode === "hang") {
+  const child = Bun.spawn(["sleep", "60"])
+  writeFileSync(process.env.FAKE_PIDS!, String(child.pid))
+  await Bun.sleep(60000)
+} else if (mode === "exit2") {
+  process.stderr.write("unknown flag --bogus\n")
+  process.exit(2)
+} else if (mode === "garbage") {
+  console.log("this is not json at all ".repeat(30))
+} else if (mode === "error") {
+  console.log(JSON.stringify({ type: "error", ...ids, error: { name: "APIError", data: { message: "boom" } } }))
+} else {
+  const reply = process.env.FAKE_REPLY ?? ""
+  console.log(JSON.stringify({ type: "step_start", ...ids, part: { type: "step-start" } }))
+  console.log(JSON.stringify({ type: "text", ...ids, part: { type: "text", text: reply } }))
+  console.log(JSON.stringify({ type: "step_finish", ...ids, part: { type: "step-finish", reason: "stop" } }))
+}

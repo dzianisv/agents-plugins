@@ -1,0 +1,18 @@
+#!/usr/bin/env bun
+// Stand-in for opencode: logs argv and stdin, and answers `run` with FAKE_OPENCODE_REPLY as a JSON text event.
+import { appendFileSync } from "node:fs"
+
+const args = process.argv.slice(2)
+const stdin = args[0] === "run" ? await Bun.stdin.text() : ""
+const log = process.env.FAKE_OPENCODE_LOG
+if (log) appendFileSync(log, `${JSON.stringify({ argv: args, stdin })}\n`)
+
+if (args[0] === "run") {
+  console.log(
+    JSON.stringify({
+      type: "text",
+      sessionID: "ses_fake",
+      part: { type: "text", text: process.env.FAKE_OPENCODE_REPLY ?? "ALLOW" },
+    }),
+  )
+}

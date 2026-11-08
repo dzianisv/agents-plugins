@@ -1,0 +1,50 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/record.ts\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/stop.ts\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/session-start.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/review.ts\"",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

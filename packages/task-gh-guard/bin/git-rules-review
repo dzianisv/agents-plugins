@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# git-rules-review: init the rules, or review one command with the judge (TypeScript CLI).
+set -euo pipefail
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun "$dir/../src/cli.ts" review "$@"

@@ -1,23 +1,18 @@
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs"
+// opencode v2 entry: same audit pipeline as v1, with the judge as a sessionless ctx.generate.text
+// call and feedback attached through the v2 context hook. Keep this file's exports.
+import { readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import {
-  auditorSystem,
-  DEFAULT_MODEL,
-  formatFeedback,
-  hasAgentWork,
-  parseModel,
-  parseVerdict,
-  pruneAuditLines,
-  renderTranscript,
-  type Msg,
-} from "./opencode/core"
+import { auditOnce, type AuditStore } from "./src/core/audit"
+import { pruneLog, record } from "./src/core/audit-log"
+import { parseModel } from "./src/core/opencode"
+import { DEFAULT_MODEL, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
+import { stateDir } from "./src/core/state"
+import { notify } from "./src/shared/notify"
 
-const logDir = () => process.env.SUPERVISOR_HOME || join(homedir(), ".cache", "supervisor")
-const LOG_RETENTION_MS = 30 * 24 * 3600 * 1000
 const DEFAULT_JUDGE_TIMEOUT_MS = 120000
 
-/** Convert session.context entries to the Msg shape core.ts helpers consume. */
+/** Convert session.context entries to the Msg shape core helpers consume. */
 export function toMsgs(infos: any[]): Msg[] {
   const out: Msg[] = []
   for (const m of infos ?? []) {
@@ -31,7 +26,7 @@ export function toMsgs(infos: any[]): Msg[] {
             .filter((c: any) => c?.type === "text")
             .map((c: any) => String(c.text ?? ""))
             .join("\n")
-          return [{ type: "tool", tool: p.name, state: { input: p.state?.input ?? {}, output } }]
+          return [{ type: "tool", tool: p.name, input: p.state?.input ?? {}, output }]
         }
         return []
       })
@@ -70,6 +65,7 @@ const canonical = (p: string | undefined): string => {
   }
 }
 
+/** opencode v2 plugin entry: audits on execution events and attaches feedback via the context hook. */
 export default {
   id: "turn-check",
   async setup(ctx: any) {
@@ -89,32 +85,7 @@ export default {
     const injected = new Map<string, { messageID: string; feedback: string }>()
 
     const log = (message: string) => console.error(`[supervisor] ${message}`)
-
-    const ensureLogDir = () => {
-      mkdirSync(logDir(), { recursive: true, mode: 0o700 })
-      chmodSync(logDir(), 0o700)
-    }
-
-    const record = (entry: object) => {
-      try {
-        ensureLogDir()
-        const file = join(logDir(), "audits.jsonl")
-        appendFileSync(file, JSON.stringify({ time: new Date().toISOString(), model: spec, ...entry }) + "\n", { mode: 0o600 })
-        chmodSync(file, 0o600)
-      } catch {}
-    }
-
-    const pruneAuditLog = () => {
-      try {
-        const file = join(logDir(), "audits.jsonl")
-        const text = readFileSync(file, "utf8")
-        const kept = pruneAuditLines(text, Date.now(), LOG_RETENTION_MS)
-        if (kept === text) return
-        const tmp = `${file}.${process.pid}.tmp`
-        writeFileSync(tmp, kept, { mode: 0o600 })
-        renameSync(tmp, file)
-      } catch {}
-    }
+    const fail = (message: string) => void notify("turn-check", message)
 
     // Audit only sessions in this instance's location; never child sessions.
     const myDir = canonical(ctx.location?.directory)
@@ -127,8 +98,8 @@ export default {
       return !skipped.get(id)
     }
 
-    const judge = async (transcript: string, rules: string): Promise<string> => {
-      const prompt = `${auditorSystem(rules)}\n\nTRANSCRIPT:\n\n${transcript}`
+    const judge = async (system: string, transcript: string): Promise<string> => {
+      const prompt = `${system}${TRANSCRIPT_HEADER}${transcript}`
       const ac = new AbortController()
       let timer: ReturnType<typeof setTimeout> | undefined
       const timeout = new Promise<never>((_, reject) => {
@@ -151,31 +122,42 @@ export default {
     const audit = async (sessionID: string) => {
       const msgs = toMsgs(await ctx.session.context({ sessionID }))
       const last = msgs.at(-1)
-      if (!last || audited.get(sessionID) === last.info.id || !hasAgentWork(msgs)) return
-
-      const started = Date.now()
-      const rules = readFileSync(rulesPath, "utf8")
-      const reply = await judge(renderTranscript(msgs, maxChars), rules)
-      const verdict = parseVerdict(reply)
-      if (!verdict) {
-        record({ sessionID, messageID: last.info.id, ms: Date.now() - started, error: "unparseable verdict", reply: reply.slice(0, 300) })
-        return
+      if (!last) return
+      const store: AuditStore = {
+        lastAudited: () => audited.get(sessionID) ?? "",
+        markAudited: (messageID) => void audited.set(sessionID, messageID),
+        readPending: () => pending.get(sessionID) ?? "",
+        writePending: (text) => void pending.set(sessionID, text),
+        clearPending: () => {
+          pending.delete(sessionID)
+          injected.delete(sessionID)
+        },
       }
-      audited.set(sessionID, last.info.id)
-      record({ sessionID, messageID: last.info.id, ms: Date.now() - started, ...verdict })
-      if (verdict.verdict === "PASS") {
-        pending.delete(sessionID)
-        injected.delete(sessionID)
-        return
-      }
-      pending.set(sessionID, formatFeedback(verdict.violations))
-      log(`${verdict.violations.length} rule violation(s) in ${sessionID}: ${verdict.violations.map((v) => v.rule).join("; ")}`)
+      await auditOnce({
+        sessionID,
+        msgs,
+        messageID: last.info.id,
+        rules: () => readFileSync(rulesPath, "utf8"),
+        judge,
+        maxChars,
+        model: spec,
+        agent: "opencode",
+        store,
+        record: (entry) => record(stateDir(), entry),
+        notify: (message) => fail(message),
+        notifyFeedback: async (summary) => {
+          await notify("turn-check feedback", summary, { level: "warning", dedupe: false })
+        },
+      })
     }
 
     const run = (id: string): void => {
       running.add(id)
       audit(id)
-        .catch((err) => log(`audit failed: ${err instanceof Error ? err.message : String(err)}`))
+        .catch((err) => {
+          log(`audit failed: ${err instanceof Error ? err.message : String(err)}`)
+          fail(`audit failed: ${err instanceof Error ? err.message : String(err)}`)
+        })
         .finally(() => {
           running.delete(id)
           if (rerun.delete(id)) run(id)
@@ -188,7 +170,7 @@ export default {
       "session.execution.interrupted",
     ])
 
-    pruneAuditLog()
+    pruneLog(stateDir())
 
     await ctx.session.hook("context", (event: any) => {
       const messages = event?.messages
@@ -197,7 +179,7 @@ export default {
       if (!user) return
       const sessionID = String(event.sessionID)
       const tracked = injected.get(sessionID)
-      if (tracked?.messageID === user.id) {
+      if (tracked && tracked.messageID === user.id) {
         attachFeedbackV2(user, tracked.feedback)
         return
       }

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# pr-ci-gate: check GitHub CI for the commits this session pushed (TypeScript CLI).
+set -euo pipefail
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun "$dir/../src/cli.ts" gate "$@"

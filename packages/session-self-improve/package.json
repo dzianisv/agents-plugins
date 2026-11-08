@@ -1,11 +1,12 @@
 {
-  "name": "opencode-session-distill",
+  "name": "opencode-session-self-improve",
   "version": "0.3.0",
   "description": "opencode plugin: after a session's work, proposes where each lesson belongs (skill, AGENTS.md, memory, hook) with approval.",
   "type": "module",
   "main": "opencode/plugin.ts",
   "exports": {
-    ".": "./opencode/plugin.ts"
+    ".": "./opencode/plugin.ts",
+    "./server": "./server.ts"
   },
   "files": [
     "server.ts",

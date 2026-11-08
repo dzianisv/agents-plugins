@@ -41,8 +41,9 @@ We measured it: 143 real OpenCode + Claude Code sessions, 227 stops classified. 
 | **opencode-auto-limit-nudge.ts** | Toasts the user when the active model hits a rate/usage limit (does not nudge the session on reset) |
 | **worktree-status.ts** | Git worktree status tool |
 | **packages/session-index** | Writes an LLM recap of each finished session into `~/.agents/sessions.csv` for cross-session lookup |
-| **packages/session-distill** | End-of-session retrospective that proposes where a fix, script or rule belongs, with approval |
+| **packages/session-self-improve** | End-of-session retrospective that proposes where a fix, script or rule belongs, with approval |
 | **packages/turn-check** | After each turn, a cheap model checks the transcript against `~/.agents/AGENTS.md` and feeds violations back |
+| **packages/auto-review** | After each non-trivial turn, a second model reviews the work and reports gaps |
 | **packages/overhelm** | Prepends a short-reply, plain-English instruction from `~/.agents/overhelm.md` to every prompt |
 
 ## The problem in detail
@@ -63,8 +64,9 @@ Implements [Reflexion](https://lilianweng.github.io/posts/2023-06-23-agent/) (Sh
 | **opencode-auto-limit-nudge.ts** | Toasts the user when the active model hits a rate/usage limit; session retries on its own |
 | **worktree-status.ts** | Git worktree status tool for checking dirty state, branch, and active sessions |
 | **packages/session-index** | Indexes finished sessions into `~/.agents/sessions.csv` with a short LLM recap, for lookup by later sessions |
-| **packages/session-distill** | Proposes where a session's lessons belong: new or edited skill, AGENTS.md, memory, hook, command or subagent |
+| **packages/session-self-improve** | Proposes where a session's lessons belong: new or edited skill, AGENTS.md, memory, hook, command or subagent |
 | **packages/turn-check** | Audits each finished turn against the user's AGENTS.md rules and returns a short violation list |
+| **packages/auto-review** | Runs a second model over each substantive turn and reports completion, test, and CI gaps |
 | **packages/overhelm** | Injects the user's brevity instruction into every prompt; shared file with the Claude Code hook |
 
 ### Key Features

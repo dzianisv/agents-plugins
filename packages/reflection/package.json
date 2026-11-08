@@ -5,10 +5,13 @@
   "description": "OpenCode plugin — reflection/judge layer that verifies task completion and forces the agent to continue until the work is actually done",
   "main": "index.ts",
   "exports": {
-    ".": "./index.ts"
+    ".": "./index.ts",
+    "./server": "./server.ts"
   },
   "files": [
     "index.ts",
+    "server.ts",
+    "src/",
     "reflection-3.ts"
   ],
   "scripts": {

@@ -1,0 +1,20 @@
+{
+  "name": "opencode-session-autoreflect",
+  "version": "0.1.0",
+  "description": "opencode plugin: after 30 minutes of work in a session, inject a reflection prompt that asks the agent what it is doing, whether it is on track, and makes it act on the answer. Idle sessions are never touched.",
+  "type": "module",
+  "main": "server.ts",
+  "exports": {
+    ".": "./server.ts"
+  },
+  "files": ["server.ts", "opencode/", "claude/", "hooks/"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": ["opencode", "plugin", "reflection", "autoreflect", "session", "long-running"],
+  "author": "dzianisv",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}

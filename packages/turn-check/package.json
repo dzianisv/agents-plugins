@@ -1,13 +1,13 @@
 {
   "name": "opencode-turn-check",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "opencode plugin: when a turn finishes, a cheap model checks the transcript against ~/.agents/AGENTS.md and feeds violations back.",
   "type": "module",
-  "main": "opencode/plugin.ts",
+  "main": "server.ts",
   "exports": {
-    ".": "./opencode/plugin.ts"
+    ".": "./server.ts"
   },
-  "files": ["server.ts", "opencode/", "claude/", "hooks/"],
+  "files": ["server.ts", "src/", "hooks/", "bin/"],
   "scripts": {
     "test": "bun test"
   },

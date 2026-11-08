@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/claude/stop.py\""
+            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/stop.ts\""
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/claude/prompt.py\""
+            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/prompt.ts\""
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/claude/session_end.py\""
+            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/session-end.ts\""
           }
         ]
       }

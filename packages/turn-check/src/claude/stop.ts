@@ -1,12 +1,30 @@
 #!/usr/bin/env bun
 // Stop hook: audit the finished turn now and hand the agent the findings, so a rule violation is
-// fixed immediately instead of waiting for the next user message. An audit error never blocks.
+// fixed immediately instead of waiting for the next user message. The inline wait is capped; a slow
+// judge falls back to the detached child and the note lands on the next prompt. An error never blocks.
+import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ERROR_PREFIX } from "../core/prompt"
+import { cliJudge } from "../core/judge-cli"
 import { clearPending, parseHookInput, readPending, safeSessionId, stateDir, type Env } from "../core/state"
-import { run, settleSeconds, type RunOptions } from "./audit"
+import { auditSession, modelName, run, settleSeconds, type RunOptions } from "./audit"
+
+/** How the hook starts the fallback child; injectable so tests can assert the spawn without running it. */
+export type SpawnFn = (
+  command: string,
+  args: string[],
+  options: { detached: boolean; stdio: "ignore"; env: Env },
+) => { unref: () => void }
+
+/** Seconds the Stop hook waits inline before handing the audit to the detached child (default 90). */
+export const inlineTimeoutSeconds = (env: Env = process.env): number => {
+  const raw = env.SUPERVISOR_INLINE_TIMEOUT
+  if (raw === undefined || raw === "") return 90
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? value : 90
+}
 
 /** True when the cwd is the judge's own temp dir, i.e. the audit is running inside the judge session. */
 function isJudgeDir(cwd: unknown): boolean {
@@ -23,19 +41,43 @@ export function shouldAudit(data: Record<string, unknown>, env: Env = process.en
   return typeof transcript === "string" && exists(transcript)
 }
 
+/** Start the audit child in its own session so a slow judge can finish after the hook returns. */
+export function spawnAudit(sessionID: string, transcriptPath: string, options: { env?: Env; spawn?: SpawnFn } = {}): void {
+  const spawnFn: SpawnFn = options.spawn ?? spawn
+  const child = spawnFn(process.execPath, [join(import.meta.dir, "audit.ts"), sessionID, transcriptPath], {
+    detached: true,
+    stdio: "ignore",
+    env: options.env ?? process.env,
+  })
+  child.unref()
+}
+
 /** Audit the finished turn; block the stop with the findings when a rule was broken. */
-export async function main(input: string, options: { env?: Env; once?: RunOptions["once"] } = {}): Promise<number> {
+export async function main(
+  input: string,
+  options: { env?: Env; once?: RunOptions["once"]; spawn?: SpawnFn } = {},
+): Promise<number> {
   const env = options.env ?? process.env
   const data = parseHookInput(input)
   if (!shouldAudit(data, env)) return 0
   const sessionID = safeSessionId(data.session_id)
   const dir = stateDir(env)
+  const transcript = String(data.transcript_path)
+  const inline = inlineTimeoutSeconds(env)
+  const once =
+    options.once ??
+    ((id: string, path: string) =>
+      auditSession(id, path, { env, judge: cliJudge({ model: modelName(env), env, timeoutSeconds: inline }) }))
   await new Promise((resolve) => setTimeout(resolve, settleSeconds(env) * 1000))
-  await run(sessionID, String(data.transcript_path), { env, once: options.once })
+  await run(sessionID, transcript, { env, once })
   const feedback = readPending(sessionID, dir).trim()
   if (!feedback) return 0
-  // An audit error is not a violation: leave the note for the next prompt instead of blocking.
-  if (feedback.startsWith(ERROR_PREFIX)) return 0
+  // An audit error (a judge that timed out inside the cap, or a broken call) is not a violation: let the
+  // detached child finish it and leave the note for the next prompt instead of blocking.
+  if (feedback.startsWith(ERROR_PREFIX)) {
+    spawnAudit(sessionID, transcript, { env, spawn: options.spawn })
+    return 0
+  }
   clearPending(sessionID, dir)
   process.stdout.write(`${JSON.stringify({ decision: "block", reason: feedback })}\n`)
   return 0

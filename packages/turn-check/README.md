@@ -3,11 +3,12 @@
 Plugin for opencode and Claude Code. When the agent stops, a cheap model reads the conversation
 and `~/.agents/AGENTS.md`, then lists the rules the agent broke, with quotes. The findings are
 delivered immediately: in Claude Code the Stop hook blocks with them, so the agent fixes them in the
-same turn; in opencode the plugin prompts the session with a `<system-reminder>`. If that delivery
-fails, the note falls back to your next message. An audit error is never delivered as a block, it
-waits for the next prompt. Every time findings are delivered you also get a desktop notification
-("N rule violation(s): rule; rule"), on both runtimes, never deduplicated; opencode v1 adds a toast.
-`AGENTS_NOTIFY=0` turns it off. Design and limits: [DESIGN.md](DESIGN.md).
+same turn, within a 90 second wait (`SUPERVISOR_INLINE_TIMEOUT`); if the judge is slower than that,
+the audit finishes in the background and the note falls back to your next message. In opencode the
+plugin prompts the session with a `<system-reminder>` as soon as the audit returns. An audit error is
+never delivered as a block, it waits for the next prompt. Every time findings are delivered you also
+get a desktop notification ("N rule violation(s): rule; rule"), on both runtimes, never deduplicated;
+opencode v1 adds a toast. `AGENTS_NOTIFY=0` turns it off. Design and limits: [DESIGN.md](DESIGN.md).
 
 ## When it cannot run
 

@@ -5,7 +5,8 @@ import { dirname, join } from "node:path"
 import { utimesSync } from "node:fs"
 import { main as promptMain } from "../src/claude/prompt"
 import { main as sessionEndMain } from "../src/claude/session-end"
-import { formatFeedback } from "../src/core/prompt"
+import { main as stopMain, inlineTimeoutSeconds } from "../src/claude/stop"
+import { ERROR_PREFIX, formatFeedback } from "../src/core/prompt"
 import { auditedPath, lockPath, markAudited, pendingPath, rerunPath, safeSessionId, LOCK_STALE_SECONDS, writePending } from "../src/core/state"
 import { FAIL_REPLY, makeEnv, type TestEnv } from "./helpers"
 
@@ -44,6 +45,32 @@ describe("stop hook", () => {
     const result = env.runHook("stop.ts", payload(), { FAKE_MODE: "exit2" })
     expect([result.status, result.stdout]).toEqual([0, ""])
     expect(readFileSync(pendingPath("s1"), "utf8")).toContain("turn-check ERROR:")
+  })
+
+  test("a slow judge falls back to the detached child instead of blocking", async () => {
+    const calls: Array<{ command: string; args: string[]; options: { detached: boolean; stdio: "ignore" } }> = []
+    const spawnFn = (command: string, args: string[], options: any) => {
+      calls.push({ command, args, options })
+      return { unref: () => {} }
+    }
+    const once = async (id: string) => {
+      writePending(id, `${ERROR_PREFIX} the audit of your last turn failed (judge timed out after 1s)`)
+      return "error" as const
+    }
+    const code = await stopMain(JSON.stringify(payload()), { env: process.env, once, spawn: spawnFn })
+    expect(code).toBe(0)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].args[0].endsWith(join("src", "claude", "audit.ts"))).toBe(true)
+    expect(calls[0].args.slice(1)).toEqual(["s1", env.transcript])
+    expect(calls[0].options.detached).toBe(true)
+    expect(calls[0].options.stdio).toBe("ignore")
+    expect(readFileSync(pendingPath("s1"), "utf8")).toContain("turn-check ERROR:")
+  })
+
+  test("the inline wait defaults to 90 seconds", () => {
+    expect(inlineTimeoutSeconds({})).toBe(90)
+    expect(inlineTimeoutSeconds({ SUPERVISOR_INLINE_TIMEOUT: "30" })).toBe(30)
+    expect(inlineTimeoutSeconds({ SUPERVISOR_INLINE_TIMEOUT: "nope" })).toBe(90)
   })
 
   test("the guards skip the audit", () => {
@@ -221,13 +248,13 @@ describe("hooks file and manifest", () => {
       expect(command).toBe(expected)
       expect(existsSync(join(root, "src", "claude", script))).toBe(true)
     }
-    // The Stop hook audits inline, so its timeout has to cover the judge.
-    expect(hooks.Stop[0].hooks[0].timeout).toBe(300)
+    // The Stop hook audits inline within SUPERVISOR_INLINE_TIMEOUT, so its timeout has to cover that.
+    expect(hooks.Stop[0].hooks[0].timeout).toBe(150)
   })
 
   test("the plugin manifest names turn-check", () => {
     const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))
-    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.3"])
+    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.4"])
     expect(manifest.author).toEqual({ name: "Dzianis Vashchuk" })
   })
 })

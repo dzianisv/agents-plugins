@@ -202,10 +202,19 @@ export function parseVerdict(text: string): Verdict | null {
   return raw.verdict === "PASS" ? { verdict: "PASS", violations: [] } : { verdict: "FAIL", violations }
 }
 
+/** The plugin name on every injected note, so the source is obvious in the session. */
+export const FEEDBACK_PREFIX = "[turn-check]"
+
 /** The note handed to the agent on the next prompt. */
 export function formatFeedback(violations: Violation[]): string {
   const lines = violations.map((v) => `- ${v.rule}${v.evidence ? ` (${v.evidence})` : ""}${v.fix ? ` Fix: ${v.fix}` : ""}`)
-  return `Supervisor audit of your previous work found rule violations from ~/.agents/AGENTS.md:\n${lines.join("\n")}\nCorrect these first if they still apply. Do not repeat them.`
+  return `${FEEDBACK_PREFIX} supervisor audit of your previous work found rule violations from ~/.agents/AGENTS.md:\n${lines.join("\n")}\nCorrect these first if they still apply. Do not repeat them.`
+}
+
+/** True only for a note that lists at least one violation; errors and empty notes are never injected. */
+export function isViolationFeedback(feedback: string): boolean {
+  if (!feedback || feedback.startsWith(ERROR_PREFIX)) return false
+  return feedback.split("\n").some((line) => line.startsWith("- "))
 }
 
 /** System text for the auditor model, ending with the rules. */

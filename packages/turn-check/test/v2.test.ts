@@ -107,6 +107,7 @@ test("a FAIL verdict is injected immediately and not re-attached to the next use
   await waitFor(() => calls.injected.length === 1)
 
   expect(calls.injected[0].sessionID).toBe("s2")
+  expect(calls.injected[0].text).toContain("[turn-check]")
   expect(calls.injected[0].text).toContain("Replies max 6 lines")
   expect(calls.injected[0].text).toContain("<system-reminder>")
 

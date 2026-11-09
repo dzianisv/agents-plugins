@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { JudgeError, replyFromEvents } from "../src/core/judge-cli"
-import { auditorSystem, buildPrompt, formatFeedback, hasAgentWork, MAX_PROMPT_CHARS, parseVerdict, renderTranscript, summariseTool, USER_MESSAGE_CAP, type Msg } from "../src/core/prompt"
+import { auditorSystem, buildPrompt, formatError, formatFeedback, hasAgentWork, isViolationFeedback, MAX_PROMPT_CHARS, parseVerdict, renderTranscript, summariseTool, USER_MESSAGE_CAP, type Msg } from "../src/core/prompt"
 import { buildMessages, lastEntryUuid } from "../src/core/transcript-claude"
 import { assistant, text, toolResult, toolUse, user } from "./helpers"
 
@@ -158,9 +158,16 @@ describe("feedback text", () => {
       { rule: "Max 6 lines", evidence: "#4 12 lines", fix: "shorten" },
       { rule: "No emoji", evidence: "", fix: "" },
     ])
-    expect(out.startsWith("Supervisor audit of your previous work found rule violations from ~/.agents/AGENTS.md:\n")).toBe(true)
+    expect(out.startsWith("[turn-check] supervisor audit of your previous work found rule violations from ~/.agents/AGENTS.md:\n")).toBe(true)
     expect(out).toContain("- Max 6 lines (#4 12 lines) Fix: shorten\n- No emoji\n")
     expect(out.endsWith("Correct these first if they still apply. Do not repeat them.")).toBe(true)
+  })
+
+  test("only a note with violations is injected", () => {
+    expect(isViolationFeedback(formatFeedback([{ rule: "Max 6 lines", evidence: "#1", fix: "shorten" }]))).toBe(true)
+    expect(isViolationFeedback(formatError("judge timed out after 90s"))).toBe(false)
+    expect(isViolationFeedback("")).toBe(false)
+    expect(isViolationFeedback("turn-check ERROR: nothing checked")).toBe(false)
   })
 
   test("auditor system embeds rules and instructions", () => {

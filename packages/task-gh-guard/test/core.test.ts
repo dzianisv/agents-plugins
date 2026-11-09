@@ -427,6 +427,8 @@ describe("check", () => {
       AGENTS_NOTIFY_CMD: "true",
       AGENTS_NOTIFY_STATE_DIR: join(dir, "notify-state"),
     }
+    delete env.TASK_GH_GUARD_CHILD
+    delete env.TASK_GH_GUARD_REVIEW
   })
 
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
@@ -497,9 +499,16 @@ describe("check", () => {
   })
 
   test("a judge child is never reviewed", async () => {
-    expect((await check("git commit -m x", reviewEnv({ TASK_GH_GUARD_CHILD: "1" }))).decision).toBe("skip")
+    const judgeCwd = mkdtempSync(join(tmpdir(), "tgg-review-judge-"))
+    expect((await check("git commit -m x", reviewEnv({ TASK_GH_GUARD_CHILD: "1" }), judgeCwd)).decision).toBe("skip")
     expect((await check("git commit -m x", reviewEnv({ TASK_GH_GUARD_REVIEW: "0" }))).decision).toBe("skip")
     expect(judgeCalls()).toEqual([])
+    rmSync(judgeCwd, { recursive: true, force: true })
+  })
+
+  test("a leaked child flag outside a judge dir still reviews", async () => {
+    expect((await check("git commit -m x", reviewEnv({ TASK_GH_GUARD_CHILD: "1" }))).decision).toBe("allow")
+    expect(judgeCalls().length).toBeGreaterThan(0)
   })
 
   test("an unreadable model or rules file is a skip", async () => {

@@ -2,6 +2,7 @@
 // Stop hook: start a detached audit of the finished turn and return at once.
 import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseHookInput, safeSessionId, type Env } from "../core/state"
 
@@ -12,9 +13,16 @@ export type SpawnFn = (
   options: { detached: boolean; stdio: "ignore"; env: Env },
 ) => { unref: () => void }
 
+/** True when the cwd is the judge's own temp dir, i.e. the audit is running inside the judge session. */
+function isJudgeDir(cwd: unknown): boolean {
+  return typeof cwd === "string" && cwd.startsWith(join(tmpdir(), "supervisor-"))
+}
+
 /** False when the hook is disabled, runs inside the judge, repeats a Stop, or has no transcript. */
 export function shouldAudit(data: Record<string, unknown>, env: Env = process.env, exists: (path: string) => boolean = existsSync): boolean {
-  if (env.SUPERVISOR_ENABLED === "0" || env.SUPERVISOR_CHILD === "1") return false
+  // The child flag only silences the judge's own session; a leaked flag must not disable audits elsewhere.
+  if (env.SUPERVISOR_ENABLED === "0") return false
+  if (env.SUPERVISOR_CHILD === "1" && isJudgeDir(data.cwd)) return false
   if (data.stop_hook_active) return false
   const transcript = data.transcript_path
   return typeof transcript === "string" && exists(transcript)

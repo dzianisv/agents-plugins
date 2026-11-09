@@ -60,7 +60,7 @@ Primary plugins:
 - `reflection.ts` (reflection-3): validates task completion and workflow requirements.
 - `tts.ts`: reads the final assistant response aloud (macOS or Coqui server).
 - `telegram.ts`: posts completion notifications to Telegram and accepts replies.
-- `opencode-auto-limit-nudge.ts`: toasts the user when the active model hits a rate/usage limit (does not nudge the session on reset).
+- `opencode-auto-limit-nudge.ts`: auto-resumes a session that died on a usage/rate limit (settle check, provider reset time or exponential backoff, gives up after the configured window). Also toasts the schedule in the TUI.
 
 ## Plugin Summaries
 

@@ -22,6 +22,7 @@ import {
   maxBlocks,
   readState,
   reported,
+  writeBudget,
   safeSessionID,
   statePath,
   writeState,
@@ -195,15 +196,11 @@ describe("block ceiling", () => {
   test("blocksInWindow counts this branch across every sha, inside the window only", () => {
     const dir = mkdtempSync(join(tmpdir(), "tgg-ceiling-"))
     const path = join(dir, "state.json")
-    writeState(path, {
-      version: 1,
-      entries: [],
-      reported: {
-        "/r|b@aaa": { at: 100 },
-        "/r|b@bbb": { at: 200 },
-        "/r|other@ccc": { at: 300 },
-        "/r|b@ddd": { at: 10 },
-      },
+    writeBudget(path, {
+      "/r|b@aaa": { at: 100 },
+      "/r|b@bbb": { at: 200 },
+      "/r|other@ccc": { at: 300 },
+      "/r|b@ddd": { at: 10 },
     })
     expect(blocksInWindow(path, { repo: "/r", branch: "b" }, 250, 3600)).toBe(3)
     expect(blocksInWindow(path, { repo: "/r", branch: "b" }, 4000, 3600)).toBe(0)

@@ -243,7 +243,7 @@ export async function check(command: string, env: NodeJS.ProcessEnv = process.en
   const entry = { at: Math.floor(started), model, command: command.slice(0, 300) }
   let verdict: { decision: "allow" | "deny"; reason: string }
   try {
-    const raw = env.TASK_GH_GUARD_REVIEW_TIMEOUT ?? "60"
+    const raw = env.TASK_GH_GUARD_REVIEW_TIMEOUT ?? "120"
     const timeout = Number(raw)
     if (!Number.isFinite(timeout)) throw new Error(`invalid TASK_GH_GUARD_REVIEW_TIMEOUT: ${raw}`)
     const { reply, session } = await runJudge(promptFor(rules, command), model, timeout, env)

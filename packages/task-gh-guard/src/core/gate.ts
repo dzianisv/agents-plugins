@@ -142,7 +142,7 @@ export async function openStackBranches(repo: string, number?: number | null): P
   return []
 }
 
-/** Records the branches a push-like command landed, state only when local equals origin. */
+/** Records the branches a push-like or GitHub-post command landed, state only when local equals origin. */
 export async function record(
   runtime: string,
   sessionID: string,
@@ -161,6 +161,12 @@ export async function record(
         skipped.push({ reason: "dry run" })
         continue
       }
+      const repo = await toplevel(directory)
+      const branch = repo ? await currentBranch(repo) : null
+      if (repo && branch) pairs.push({ repo, branch })
+      continue
+    }
+    if (hit.kind === "post") {
       const repo = await toplevel(directory)
       const branch = repo ? await currentBranch(repo) : null
       if (repo && branch) pairs.push({ repo, branch })

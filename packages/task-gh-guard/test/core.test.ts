@@ -59,6 +59,18 @@ describe("isPushCommand", () => {
     ["gh stack submit", true],
     ["gh stack link 12", true],
     ["scripts/git-sign-batch -m msg", true],
+    ["gh pr comment 12 -m 'done'", true],
+    ["gh pr create --title t --body b", true],
+    ["gh pr merge 12 --squash", true],
+    ["gh issue close 3", true],
+    ["gh release create v1.0", true],
+    ["gh api repos/acme/widgets/issues/1/comments -f body=hi", true],
+    ["gh api graphql -f query='mutation { x }'", true],
+    ["gh pr view 12", false],
+    ["gh pr list", false],
+    ["gh issue list", false],
+    ["gh api repos/acme/widgets/pulls/1", false],
+    ["gh api graphql -f query='query { x }'", false],
     ["git status", false],
     ["git pushd", false],
     ["echo hi", false],
@@ -95,9 +107,23 @@ describe("classify", () => {
     expect(classify(["/usr/local/bin/git-sign-batch", "--no-push"])).toEqual({ kind: "sign", dry: true })
   })
 
+  test("finds the GitHub write commands", () => {
+    expect(classify(["gh", "pr", "comment", "12", "-m", "hi"])).toEqual({ kind: "post" })
+    expect(classify(["gh", "pr", "create"])).toEqual({ kind: "post" })
+    expect(classify(["gh", "issue", "close", "3"])).toEqual({ kind: "post" })
+    expect(classify(["gh", "release", "create", "v1"])).toEqual({ kind: "post" })
+    expect(classify(["gh", "api", "repos/o/r/issues/1/comments", "-f", "body=hi"])).toEqual({ kind: "post" })
+    expect(classify(["gh", "api", "graphql", "-f", "query=mutation { x }"])).toEqual({ kind: "post" })
+  })
+
   test("ignores reads", () => {
     expect(classify(["git", "status"])).toBeNull()
     expect(classify(["gh", "stack", "list"])).toBeNull()
+    expect(classify(["gh", "pr", "view", "12"])).toBeNull()
+    expect(classify(["gh", "pr", "list"])).toBeNull()
+    expect(classify(["gh", "issue", "list"])).toBeNull()
+    expect(classify(["gh", "api", "repos/o/r/pulls/1"])).toBeNull()
+    expect(classify(["gh", "api", "graphql", "-f", "query=query { x }"])).toBeNull()
   })
 })
 

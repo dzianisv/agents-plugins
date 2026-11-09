@@ -158,8 +158,21 @@ function judgeOutput(stdout: string): Judge {
   return { reply: texts.join("").trim(), session }
 }
 
-/** Runs the judge and returns its reply and session id; rejects with a short reason on any failure. */
-export function runJudge(prompt: string, model: string, timeout: number, env: NodeJS.ProcessEnv = process.env): Promise<Judge> {
+/** Transient judge failures worth one retry: transport and socket drops from `opencode run`. */
+const TRANSIENT = /transport|socket|ECONN|EPIPE/i
+
+/** Runs the judge, retrying once on a transient transport failure. */
+export async function runJudge(prompt: string, model: string, timeout: number, env: NodeJS.ProcessEnv = process.env): Promise<Judge> {
+  try {
+    return await attemptJudge(prompt, model, timeout, env)
+  } catch (err) {
+    if (!TRANSIENT.test(err instanceof Error ? err.message : String(err))) throw err
+    return await attemptJudge(prompt, model, timeout, env)
+  }
+}
+
+/** One judge subprocess attempt. */
+function attemptJudge(prompt: string, model: string, timeout: number, env: NodeJS.ProcessEnv): Promise<Judge> {
   return new Promise((resolve, reject) => {
     if (!which("opencode", env)) return reject(new Error("opencode is not on PATH"))
     const workdir = mkdtempSync(join(tmpdir(), "tgg-review-"))
@@ -167,9 +180,10 @@ export function runJudge(prompt: string, model: string, timeout: number, env: No
       cwd: workdir,
       env: envWithSecrets(env),
       detached: true,
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", "pipe"],
     })
     let stdout = ""
+    let stderr = ""
     let settled = false
     const finish = (fn: () => void) => {
       if (settled) return
@@ -185,9 +199,16 @@ export function runJudge(prompt: string, model: string, timeout: number, env: No
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString()
     })
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
     child.on("error", (err) => finish(() => reject(err)))
     child.on("close", (code) =>
-      finish(() => (code === 0 ? resolve(judgeOutput(stdout)) : reject(new Error(`opencode exited ${code}`)))),
+      finish(() =>
+        code === 0
+          ? resolve(judgeOutput(stdout))
+          : reject(new Error(`opencode exited ${code}: ${stderr.trim().slice(0, 200) || "no stderr"}`)),
+      ),
     )
     child.stdin?.end(prompt)
   })

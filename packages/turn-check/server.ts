@@ -1,12 +1,12 @@
 // opencode v2 entry: same audit pipeline as v1, with the judge as a sessionless ctx.generate.text
 // call and feedback attached through the v2 context hook. Keep this file's exports.
-import { readFileSync, realpathSync } from "node:fs"
-import { homedir } from "node:os"
+import { realpathSync } from "node:fs"
 import { join } from "node:path"
 import { auditOnce, type AuditStore } from "./src/core/audit"
 import { pruneLog, record } from "./src/core/audit-log"
 import { parseModel } from "./src/core/opencode"
 import { DEFAULT_MODEL, isViolationFeedback, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
+import { composeRules, readRules } from "./src/core/rules"
 import { stateDir } from "./src/core/state"
 import { countInWindow, mayInject, recordInjection, type Budget } from "./src/shared/inject-limit"
 import { notify } from "./src/shared/notify"
@@ -78,7 +78,7 @@ export default {
 
     const spec = process.env.SUPERVISOR_MODEL ?? DEFAULT_MODEL
     const model = parseModel(spec)
-    const rulesPath = process.env.SUPERVISOR_RULES ?? join(homedir(), ".agents", "AGENTS.md")
+    const rules = () => composeRules(readRules(process.env, ctx.location?.directory))
     const maxChars = Number(process.env.SUPERVISOR_MAX_CHARS ?? 60000)
     const judgeTimeoutMs = Number(process.env.SUPERVISOR_JUDGE_TIMEOUT ?? DEFAULT_JUDGE_TIMEOUT_MS / 1000) * 1000
 
@@ -164,7 +164,7 @@ export default {
         sessionID,
         msgs,
         messageID: last.info.id,
-        rules: () => readFileSync(rulesPath, "utf8"),
+        rules,
         judge,
         maxChars,
         model: spec,

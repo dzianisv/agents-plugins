@@ -62,10 +62,23 @@ describe("stop hook", () => {
     expect(code).toBe(0)
     expect(calls).toHaveLength(1)
     expect(calls[0].args[0].endsWith(join("src", "claude", "audit.ts"))).toBe(true)
-    expect(calls[0].args.slice(1)).toEqual(["s1", env.transcript])
+    expect(calls[0].args.slice(1, 3)).toEqual(["s1", env.transcript])
+    expect(calls[0].args[3]).toBe(process.cwd())
     expect(calls[0].options.detached).toBe(true)
     expect(calls[0].options.stdio).toBe("ignore")
     expect(readFileSync(pendingPath("s1"), "utf8")).toContain("turn-check ERROR:")
+  })
+
+  test("the project AGENTS.md is judged alongside the global one", () => {
+    const project = mkdtempSync(join(tmpdir(), "tc-project-"))
+    writeFileSync(join(project, "AGENTS.md"), "PROJECT RULE: always cite the file")
+    const result = env.runHook("stop.ts", payload({ cwd: project }), { SUPERVISOR_RULES: "", FAKE_REPLY: FAIL_REPLY })
+    expect([result.status, result.stderr]).toEqual([0, ""])
+    const sent = env.calls()[0].stdin
+    expect(sent).toContain("PROJECT RULE: always cite the file")
+    expect(sent).toContain(`# Rules from ${join(project, "AGENTS.md")}`)
+    expect(sent).toContain("# Rules from ") // the global file is included too
+    rmSync(project, { recursive: true, force: true })
   })
 
   test("stops blocking after the per-session ceiling", () => {
@@ -266,7 +279,7 @@ describe("hooks file and manifest", () => {
 
   test("the plugin manifest names turn-check", () => {
     const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))
-    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.5"])
+    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.6"])
     expect(manifest.author).toEqual({ name: "Dzianis Vashchuk" })
   })
 })

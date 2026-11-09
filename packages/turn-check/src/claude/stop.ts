@@ -49,9 +49,11 @@ export function shouldAudit(data: Record<string, unknown>, env: Env = process.en
 }
 
 /** Start the audit child in its own session so a slow judge can finish after the hook returns. */
-export function spawnAudit(sessionID: string, transcriptPath: string, options: { env?: Env; spawn?: SpawnFn } = {}): void {
+export function spawnAudit(sessionID: string, transcriptPath: string, options: { env?: Env; spawn?: SpawnFn; cwd?: string } = {}): void {
   const spawnFn: SpawnFn = options.spawn ?? spawn
-  const child = spawnFn(process.execPath, [join(import.meta.dir, "audit.ts"), sessionID, transcriptPath], {
+  const args = [join(import.meta.dir, "audit.ts"), sessionID, transcriptPath]
+  if (options.cwd) args.push(options.cwd)
+  const child = spawnFn(process.execPath, args, {
     detached: true,
     stdio: "ignore",
     env: options.env ?? process.env,
@@ -71,10 +73,11 @@ export async function main(
   const dir = stateDir(env)
   const transcript = String(data.transcript_path)
   const inline = inlineTimeoutSeconds(env)
+  const cwd = typeof data.cwd === "string" && data.cwd ? data.cwd : process.cwd()
   const once =
     options.once ??
     ((id: string, path: string) =>
-      auditSession(id, path, { env, judge: cliJudge({ model: modelName(env), env, timeoutSeconds: inline }) }))
+      auditSession(id, path, { env, cwd, judge: cliJudge({ model: modelName(env), env, timeoutSeconds: inline }) }))
   await new Promise((resolve) => setTimeout(resolve, settleSeconds(env) * 1000))
   await run(sessionID, transcript, { env, once })
   const feedback = readPending(sessionID, dir).trim()
@@ -82,7 +85,7 @@ export async function main(
   // An audit error is not a violation, and an empty note is not injected: let the detached child finish
   // the error case and leave the note for the next prompt instead of blocking.
   if (!isViolationFeedback(feedback)) {
-    spawnAudit(sessionID, transcript, { env, spawn: options.spawn })
+    spawnAudit(sessionID, transcript, { env, spawn: options.spawn, cwd })
     return 0
   }
   const now = Math.floor(Date.now() / 1000)

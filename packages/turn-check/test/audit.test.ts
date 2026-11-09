@@ -76,7 +76,7 @@ describe("auditSession", () => {
     expect(argv.some((a: string) => a.includes("RULES:") || a.includes("TRANSCRIPT:"))).toBe(false)
     const sent = call.stdin
     expect(sent.startsWith("You are a strict compliance auditor")).toBe(true)
-    expect(sent).toContain("RULES:\nRULE: reply in 6 lines max")
+    expect(sent).toContain("RULE: reply in 6 lines max")
     expect(sent).toContain("TRANSCRIPT:\n\n[#0 USER]\nfix it\n\n[#1 ASSISTANT]\ndone, here is a long answer")
   })
 

@@ -1,13 +1,12 @@
 // opencode v1 plugin: audit a session when it goes idle and attach the findings to the next user
 // turn. The judge is a hidden child session; everything else lives in src/core.
 import type { Plugin } from "@opencode-ai/plugin"
-import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { auditOnce, type AuditStore } from "../core/audit"
 import { pruneLog, record } from "../core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
 import { DEFAULT_MODEL, isViolationFeedback } from "../core/prompt"
+import { composeRules, readRules } from "../core/rules"
 import { stateDir } from "../core/state"
 import { countInWindow, mayInject, recordInjection, type Budget } from "../shared/inject-limit"
 import { notify } from "../shared/notify"
@@ -22,12 +21,12 @@ const MAX_INJECTIONS = 3
 const INJECTION_WINDOW = 3600
 
 /** opencode v1 plugin: audit a session when it goes idle and attach the findings to the next user turn. */
-export const Supervisor: Plugin = async ({ client }) => {
+export const Supervisor: Plugin = async ({ client, directory }) => {
   if (process.env.SUPERVISOR_ENABLED === "0" || isHeadlessRun(process.argv, process.env)) return {}
 
   const spec = process.env.SUPERVISOR_MODEL ?? DEFAULT_MODEL
   const model = parseModel(spec)
-  const rulesPath = process.env.SUPERVISOR_RULES ?? join(homedir(), ".agents", "AGENTS.md")
+  const rules = () => composeRules(readRules(process.env, directory))
   const maxChars = Number(process.env.SUPERVISOR_MAX_CHARS ?? 60000)
   const judgeTimeoutMs = Number(process.env.SUPERVISOR_JUDGE_TIMEOUT ?? DEFAULT_JUDGE_TIMEOUT_MS / 1000) * 1000
 
@@ -161,7 +160,7 @@ export const Supervisor: Plugin = async ({ client }) => {
       sessionID,
       msgs,
       messageID: last.info.id,
-      rules: () => readFileSync(rulesPath, "utf8"),
+      rules,
       judge,
       maxChars,
       model: spec,

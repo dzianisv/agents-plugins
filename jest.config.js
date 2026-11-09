@@ -5,7 +5,8 @@ export default {
   testPathIgnorePatterns: ['/node_modules/', 'session-fork-directory.test.ts', 'e2e.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   moduleNameMapper: {
-    '^opencode$': '<rootDir>/test/mocks/opencodeMock.js'
+    '^opencode$': '<rootDir>/test/mocks/opencodeMock.js',
+    '^(\\.{1,2}/.*)\\.js$': '$1'
   },
   extensionsToTreatAsEsm: ['.ts'],
   transform: {

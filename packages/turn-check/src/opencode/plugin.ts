@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { auditOnce, type AuditStore } from "../core/audit"
 import { pruneLog, record } from "../core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
-import { DEFAULT_MODEL } from "../core/prompt"
+import { DEFAULT_MODEL, ERROR_PREFIX } from "../core/prompt"
 import { stateDir } from "../core/state"
 import { notify } from "../shared/notify"
 import { toMsg } from "./messages"
@@ -15,6 +15,8 @@ import { toMsg } from "./messages"
 const DEFAULT_JUDGE_TIMEOUT_MS = 240000
 const AUDIT_TITLE = "supervisor audit"
 const STALE_AUDIT_MS = 5 * 60 * 1000
+/** At most this many immediate feedback injections per session, so a judge that keeps failing cannot loop. */
+const MAX_INJECTIONS = 3
 
 /** opencode v1 plugin: audit a session when it goes idle and attach the findings to the next user turn. */
 export const Supervisor: Plugin = async ({ client }) => {
@@ -31,6 +33,7 @@ export const Supervisor: Plugin = async ({ client }) => {
   const running = new Set<string>()
   const rerun = new Set<string>()
   const pending = new Map<string, string>()
+  const injections = new Map<string, number>()
   const injected = new Map<string, { messageID: string; feedback: string }>()
   const auditing = new Set<string>()
 
@@ -82,6 +85,22 @@ export const Supervisor: Plugin = async ({ client }) => {
     return { text: answer.parts.flatMap((p) => (p.type === "text" ? [p.text as string] : [])).join(""), meta }
   }
 
+  /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
+  const injectFeedback = async (sessionID: string, text: string) => {
+    if (!text.trim() || text.startsWith(ERROR_PREFIX)) return
+    if ((injections.get(sessionID) ?? 0) >= MAX_INJECTIONS) return
+    injections.set(sessionID, (injections.get(sessionID) ?? 0) + 1)
+    try {
+      await client.session.prompt({
+        path: { id: sessionID },
+        body: { parts: [{ type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` }] },
+      })
+      pending.delete(sessionID)
+    } catch (err) {
+      log("error", `feedback inject failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   const audit = async (sessionID: string) => {
     const res = await client.session.messages({ path: { id: sessionID } })
     const msgs = ((res.data ?? []) as any[]).map(toMsg)
@@ -119,7 +138,10 @@ export const Supervisor: Plugin = async ({ client }) => {
       lastAudited: () => audited.get(sessionID) ?? "",
       markAudited: (messageID) => void audited.set(sessionID, messageID),
       readPending: () => pending.get(sessionID) ?? "",
-      writePending: (text) => void pending.set(sessionID, text),
+      writePending: (text) => {
+        pending.set(sessionID, text)
+        void injectFeedback(sessionID, text)
+      },
       clearPending: () => {
         pending.delete(sessionID)
         injected.delete(sessionID)

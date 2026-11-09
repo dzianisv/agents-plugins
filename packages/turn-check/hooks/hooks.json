@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/stop.ts\""
+            "command": "PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin\" bun \"${CLAUDE_PLUGIN_ROOT}/src/claude/stop.ts\"",
+            "timeout": 300
           }
         ]
       }

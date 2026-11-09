@@ -8,11 +8,14 @@ import { pruneLog, record } from "./src/core/audit-log"
 import { parseModel } from "./src/core/opencode"
 import { DEFAULT_MODEL, isViolationFeedback, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
 import { stateDir } from "./src/core/state"
+import { countInWindow, mayInject, recordInjection, type Budget } from "./src/shared/inject-limit"
 import { notify } from "./src/shared/notify"
 
 const DEFAULT_JUDGE_TIMEOUT_MS = 240000
-/** At most this many immediate feedback injections per session, so a judge that keeps failing cannot loop. */
+/** At most this many immediate feedback injections per session per window. */
 const MAX_INJECTIONS = 3
+/** The window the injection ceiling is counted over, in seconds. */
+const INJECTION_WINDOW = 3600
 
 /** Convert session.context entries to the Msg shape core helpers consume. */
 export function toMsgs(infos: any[]): Msg[] {
@@ -85,7 +88,7 @@ export default {
     const rerun = new Set<string>()
     const pending = new Map<string, string>()
     const injected = new Map<string, { messageID: string; feedback: string }>()
-    const injections = new Map<string, number>()
+    const injections: Budget = {}
 
     const log = (message: string) => console.error(`[supervisor] ${message}`)
     const fail = (message: string) => void notify("turn-check", message)
@@ -125,8 +128,13 @@ export default {
     /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
     const injectFeedback = async (sessionID: string, text: string) => {
       if (!isViolationFeedback(text)) return
-      if ((injections.get(sessionID) ?? 0) >= MAX_INJECTIONS) return
-      injections.set(sessionID, (injections.get(sessionID) ?? 0) + 1)
+      const now = Math.floor(Date.now() / 1000)
+      // Bounded per session: a judge that keeps finding violations cannot drive an endless loop.
+      if (!mayInject(injections, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
+        log(`not injecting again this hour for ${sessionID}: ${MAX_INJECTIONS} findings already delivered`)
+        return
+      }
+      Object.assign(injections, recordInjection(injections, `${sessionID}|${countInWindow(injections, `${sessionID}|`, now, INJECTION_WINDOW)}`, now))
       try {
         await ctx.session.prompt({ sessionID, text: `<system-reminder>\n${text}\n</system-reminder>` })
         pending.delete(sessionID)

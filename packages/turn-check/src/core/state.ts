@@ -6,6 +6,7 @@ import { existsSync, linkSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { ensureDir, pruneDir, pruneLog, remove, writeAtomic, writePrivate, LOG_PRUNE_DAYS } from "./audit-log"
+import type { Budget } from "../shared/inject-limit"
 
 /** Session state files older than this many days are pruned at SessionEnd. */
 export const PRUNE_DAYS = 7
@@ -188,6 +189,22 @@ export function writePending(sessionID: unknown, text: string, dir = stateDir())
 /** Delete the pending feedback text for a session. */
 export function clearPending(sessionID: unknown, dir = stateDir()): void {
   remove(pendingPath(sessionID, dir))
+}
+
+/** The injection budget for a session: how many notes were delivered, and when. */
+export function readInjectBudget(sessionID: unknown, dir = stateDir()): Budget {
+  try {
+    const data = JSON.parse(readFileSync(sessionFile("inject", sessionID, ".json", dir), "utf8")) as unknown
+    return data && typeof data === "object" ? (data as Budget) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Replace the injection budget for a session. */
+export function writeInjectBudget(sessionID: unknown, budget: Budget, dir = stateDir()): void {
+  ensureDir(dir)
+  writeAtomic(sessionFile("inject", sessionID, ".json", dir), JSON.stringify(budget))
 }
 
 /** Delete a session's lock, rerun and state files when no live audit owns the lock, then prune week-old leftovers. */

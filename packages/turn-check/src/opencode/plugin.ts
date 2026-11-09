@@ -9,14 +9,17 @@ import { pruneLog, record } from "../core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
 import { DEFAULT_MODEL, isViolationFeedback } from "../core/prompt"
 import { stateDir } from "../core/state"
+import { countInWindow, mayInject, recordInjection, type Budget } from "../shared/inject-limit"
 import { notify } from "../shared/notify"
 import { toMsg } from "./messages"
 
 const DEFAULT_JUDGE_TIMEOUT_MS = 240000
 const AUDIT_TITLE = "supervisor audit"
 const STALE_AUDIT_MS = 5 * 60 * 1000
-/** At most this many immediate feedback injections per session, so a judge that keeps failing cannot loop. */
+/** At most this many immediate feedback injections per session per window. */
 const MAX_INJECTIONS = 3
+/** The window the injection ceiling is counted over, in seconds. */
+const INJECTION_WINDOW = 3600
 
 /** opencode v1 plugin: audit a session when it goes idle and attach the findings to the next user turn. */
 export const Supervisor: Plugin = async ({ client }) => {
@@ -33,7 +36,7 @@ export const Supervisor: Plugin = async ({ client }) => {
   const running = new Set<string>()
   const rerun = new Set<string>()
   const pending = new Map<string, string>()
-  const injections = new Map<string, number>()
+  const injections: Budget = {}
   const injected = new Map<string, { messageID: string; feedback: string }>()
   const auditing = new Set<string>()
 
@@ -88,8 +91,14 @@ export const Supervisor: Plugin = async ({ client }) => {
   /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
   const injectFeedback = async (sessionID: string, text: string) => {
     if (!isViolationFeedback(text)) return
-    if ((injections.get(sessionID) ?? 0) >= MAX_INJECTIONS) return
-    injections.set(sessionID, (injections.get(sessionID) ?? 0) + 1)
+    const now = Math.floor(Date.now() / 1000)
+    // Bounded per session: a judge that keeps finding violations cannot drive an endless loop.
+    if (!mayInject(injections, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
+      log("error", `not injecting again this hour for ${sessionID}: ${MAX_INJECTIONS} findings already delivered`)
+      return
+    }
+    const next = recordInjection(injections, `${sessionID}|${countInWindow(injections, `${sessionID}|`, now, INJECTION_WINDOW)}`, now)
+    Object.assign(injections, next)
     try {
       await client.session.prompt({
         path: { id: sessionID },

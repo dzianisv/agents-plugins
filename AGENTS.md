@@ -166,6 +166,34 @@ For debug/diagnostic logging, write to log files instead:
 
 Test files (`test/*.ts`) may use `console.log` for test output.
 
+### Plugin loop safety
+
+A plugin that pushes text into a session can drive an agent loop. Every plugin must satisfy all of
+these, and the mistakes below have already shipped once:
+
+- **Bound every injection.** Any nudge, stop block or feedback note is counted in a budget keyed by the
+  scope the plugin owns (session, branch), inside a window (`packages/shared/src/inject-limit.ts`).
+  Past the ceiling the plugin sends one notification and stops injecting until the window passes.
+  Never inject on a state that changes on every turn without a per-scope ceiling.
+- **A changing key must not re-arm the budget.** Count every key that shares the scope prefix, not the
+  exact key. A new commit sha, a new message id or a new timestamp is not a new permission to inject.
+  Give each injection its own key (include the count), or a repeated injection in the same second
+  overwrites the previous one and the ceiling never triggers.
+- **Inject only on the condition the plugin owns.** Rule violations for turn-check, a red or pending
+  check for task-gh-guard. Never inject an error, an empty note, or a "still working" state; those go
+  to `notify` instead.
+- **Name the plugin in the injected text** (`[turn-check]`, `[task-gh-guard]`), so a loop is obvious in
+  the session and in the transcript.
+- **Never react to your own injection.** turn-check skips its own note (synthetic parts, supervisor
+  metadata, the `stop_hook_active` flag); task-gh-guard reacts only to pushes recorded by its tool
+  hooks, never to session text. A plugin must not audit, gate or nudge a turn it caused.
+- **Analyze only your own context.** Read the state file the plugin wrote, or the single turn being
+  audited. Never scan the whole conversation, and never re-check a message already checked (the
+  audited-message id).
+- **Prove it with a loop test.** Each plugin keeps a test that repeats the same input many times and
+  asserts the injection count stays at or below the ceiling, plus a test that a changed key cannot
+  raise it. `test/plugin-hygiene.test.ts` fails the build when the shared ceiling is not used.
+
 ### One TypeScript core for Claude Code and opencode
 
 - Write every plugin, in Claude Code hooks and in opencode plugins, in TypeScript. No Python, shell or other hook scripts.

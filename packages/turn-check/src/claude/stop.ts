@@ -1,17 +1,12 @@
 #!/usr/bin/env bun
-// Stop hook: start a detached audit of the finished turn and return at once.
-import { spawn } from "node:child_process"
+// Stop hook: audit the finished turn now and hand the agent the findings, so a rule violation is
+// fixed immediately instead of waiting for the next user message. An audit error never blocks.
 import { existsSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { parseHookInput, safeSessionId, type Env } from "../core/state"
-
-/** How the hook starts the child; injectable so tests can assert the spawn without running it. */
-export type SpawnFn = (
-  command: string,
-  args: string[],
-  options: { detached: boolean; stdio: "ignore"; env: Env },
-) => { unref: () => void }
+import { ERROR_PREFIX } from "../core/prompt"
+import { clearPending, parseHookInput, readPending, safeSessionId, stateDir, type Env } from "../core/state"
+import { run, settleSeconds, type RunOptions } from "./audit"
 
 /** True when the cwd is the judge's own temp dir, i.e. the audit is running inside the judge session. */
 function isJudgeDir(cwd: unknown): boolean {
@@ -28,29 +23,27 @@ export function shouldAudit(data: Record<string, unknown>, env: Env = process.en
   return typeof transcript === "string" && exists(transcript)
 }
 
-/** Spawn the audit child in its own session so the hook does not wait for it. */
-export function spawnAudit(sessionID: string, transcriptPath: string, options: { env?: Env; spawn?: SpawnFn } = {}): void {
-  const spawnFn: SpawnFn = options.spawn ?? spawn
-  const child = spawnFn(process.execPath, [join(import.meta.dir, "audit.ts"), sessionID, transcriptPath], {
-    detached: true,
-    stdio: "ignore",
-    env: options.env ?? process.env,
-  })
-  child.unref()
-}
-
-/** Read the hook payload and, when it passes the guards, start the detached audit. Prints nothing. */
-export function main(input: string, options: { env?: Env; spawn?: SpawnFn } = {}): number {
+/** Audit the finished turn; block the stop with the findings when a rule was broken. */
+export async function main(input: string, options: { env?: Env; once?: RunOptions["once"] } = {}): Promise<number> {
   const env = options.env ?? process.env
   const data = parseHookInput(input)
   if (!shouldAudit(data, env)) return 0
-  spawnAudit(safeSessionId(data.session_id), String(data.transcript_path), { env, spawn: options.spawn })
+  const sessionID = safeSessionId(data.session_id)
+  const dir = stateDir(env)
+  await new Promise((resolve) => setTimeout(resolve, settleSeconds(env) * 1000))
+  await run(sessionID, String(data.transcript_path), { env, once: options.once })
+  const feedback = readPending(sessionID, dir).trim()
+  if (!feedback) return 0
+  // An audit error is not a violation: leave the note for the next prompt instead of blocking.
+  if (feedback.startsWith(ERROR_PREFIX)) return 0
+  clearPending(sessionID, dir)
+  process.stdout.write(`${JSON.stringify({ decision: "block", reason: feedback })}\n`)
   return 0
 }
 
 if (import.meta.main) {
   try {
-    process.exit(main(readFileSync(0, "utf8")))
+    process.exit(await main(readFileSync(0, "utf8")))
   } catch {
     process.exit(0)
   }

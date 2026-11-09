@@ -6,11 +6,13 @@ import { join } from "node:path"
 import { auditOnce, type AuditStore } from "./src/core/audit"
 import { pruneLog, record } from "./src/core/audit-log"
 import { parseModel } from "./src/core/opencode"
-import { DEFAULT_MODEL, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
+import { DEFAULT_MODEL, ERROR_PREFIX, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
 import { stateDir } from "./src/core/state"
 import { notify } from "./src/shared/notify"
 
-const DEFAULT_JUDGE_TIMEOUT_MS = 120000
+const DEFAULT_JUDGE_TIMEOUT_MS = 240000
+/** At most this many immediate feedback injections per session, so a judge that keeps failing cannot loop. */
+const MAX_INJECTIONS = 3
 
 /** Convert session.context entries to the Msg shape core helpers consume. */
 export function toMsgs(infos: any[]): Msg[] {
@@ -83,6 +85,7 @@ export default {
     const rerun = new Set<string>()
     const pending = new Map<string, string>()
     const injected = new Map<string, { messageID: string; feedback: string }>()
+    const injections = new Map<string, number>()
 
     const log = (message: string) => console.error(`[supervisor] ${message}`)
     const fail = (message: string) => void notify("turn-check", message)
@@ -119,6 +122,19 @@ export default {
       }
     }
 
+    /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
+    const injectFeedback = async (sessionID: string, text: string) => {
+      if (!text.trim() || text.startsWith(ERROR_PREFIX)) return
+      if ((injections.get(sessionID) ?? 0) >= MAX_INJECTIONS) return
+      injections.set(sessionID, (injections.get(sessionID) ?? 0) + 1)
+      try {
+        await ctx.session.prompt({ sessionID, text: `<system-reminder>\n${text}\n</system-reminder>` })
+        pending.delete(sessionID)
+      } catch (err) {
+        log(`feedback inject failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
     const audit = async (sessionID: string) => {
       const msgs = toMsgs(await ctx.session.context({ sessionID }))
       const last = msgs.at(-1)
@@ -127,7 +143,10 @@ export default {
         lastAudited: () => audited.get(sessionID) ?? "",
         markAudited: (messageID) => void audited.set(sessionID, messageID),
         readPending: () => pending.get(sessionID) ?? "",
-        writePending: (text) => void pending.set(sessionID, text),
+        writePending: (text) => {
+          pending.set(sessionID, text)
+          void injectFeedback(sessionID, text)
+        },
         clearPending: () => {
           pending.delete(sessionID)
           injected.delete(sessionID)

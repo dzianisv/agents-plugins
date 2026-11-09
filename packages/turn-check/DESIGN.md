@@ -35,15 +35,15 @@ Same auditor text, rules, truncation, verdict parsing and feedback text, from th
 
 | Step | What happens |
 |---|---|
-| `Stop` hook (`src/claude/stop.ts`) | Skips if `SUPERVISOR_ENABLED=0`, `stop_hook_active`, no transcript, or `SUPERVISOR_CHILD=1` **and** the cwd is the judge's own `supervisor-*` temp dir (a leaked flag must not disable audits elsewhere). Otherwise starts `src/claude/audit.ts` detached with bun (own session, stdio ignored, `unref`) and exits 0 with no output |
-| Audit child (`src/claude/audit.ts`) | Waits `SUPERVISOR_SETTLE_SECONDS`, takes a per-session lock. The lock is created atomically (a hard link, so the pid is complete when it appears); a stale lock (owner gone or older than 10 minutes) is replaced under an exclusive claim that is re-checked while held, so two audits that find the same stale lock cannot both take it. A lock is released only by its owner. A Stop during a running audit sets a rerun flag; the running child audits again when it finishes |
+| `Stop` hook (`src/claude/stop.ts`) | Skips if `SUPERVISOR_ENABLED=0`, `stop_hook_active`, no transcript, or `SUPERVISOR_CHILD=1` **and** the cwd is the judge's own `supervisor-*` temp dir (a leaked flag must not disable audits elsewhere). Otherwise waits `SUPERVISOR_SETTLE_SECONDS`, audits this turn inline under the session lock, and, when the audit found violations, prints `{"decision":"block","reason":<findings>}` so the agent fixes them in the same turn. An audit error is left in the pending file for the next prompt instead of blocking. The hook timeout is 300 s, the judge limit 240 s |
+| Audit (`src/claude/audit.ts`) | Takes a per-session lock. The lock is created atomically (a hard link, so the pid is complete when it appears); a stale lock (owner gone or older than 10 minutes) is replaced under an exclusive claim that is re-checked while held, so two audits that find the same stale lock cannot both take it. A lock is released only by its owner. A Stop during a running audit sets a rerun flag; the running audit goes again when it finishes |
 | Transcript (`src/core/transcript-claude.ts`) | Parses the session JSONL: real user prompts (no tool results, `isMeta`, `<system-reminder>`, `<command-`, `<local-command`, `Caveat:`), assistant text, one line per tool call with its clipped result. Skips the audit if the agent did nothing after the last user message or the newest message uuid was already audited |
 | Judge (`src/core/judge-cli.ts`) | `opencode run --format json --title "supervisor audit" --model <model>`, started in a temp dir, with the prompt (auditor text + rules + transcript) written to its stdin, so it never appears in `ps` or hits the argument limit, and with `OPENCODE_CONFIG_CONTENT={"permission":{"*":"deny"}}`, `SUPERVISOR_ENABLED=0`, `SUPERVISOR_CHILD=1`. A non-zero exit raises an error with the stderr text; every error is logged and leaves a `turn-check ERROR:` note for the next prompt. Own process group, killed whole after `SUPERVISOR_JUDGE_TIMEOUT` (default 240 s). The reply is the joined `text` events of the JSON stream. Afterwards the audit runs `opencode session delete <sessionID>` (id read from the JSON events, 20 s limit, failures ignored). If no event arrived, it lists sessions and deletes those titled exactly `supervisor audit`, created after this audit started, in this audit's temp directory. Other sessions are never touched |
 | Result (`src/core/audit.ts`) | A valid verdict marks the message audited. PASS deletes `~/.cache/supervisor/pending/<session>.txt`; FAIL writes it. A failed or unparseable call is logged and retried on the next Stop |
-| `UserPromptSubmit` hook (`src/claude/prompt.ts`) | If a pending file exists, prints `systemMessage` plus `additionalContext` (the feedback in a `<system-reminder>`) and deletes the file, so it is delivered once |
+| `UserPromptSubmit` hook (`src/claude/prompt.ts`) | Fallback: if a pending file still exists (an audit error, or a block the agent did not act on), prints `systemMessage` plus `additionalContext` (the feedback in a `<system-reminder>`) and deletes the file, so it is delivered once |
 | `SessionEnd` hook (`src/claude/session-end.ts`) | Deletes the session's lock, rerun and state files, but keeps them while a live audit owns the lock (owner pid alive and mtime under 10 minutes); prunes pending and state files older than 7 days and audit log entries older than 30 days |
 
-The audit costs one `opencode` start (a few seconds) per turn, off the hot path. The Stop hook never blocks or prompts the agent, so there is no fix loop.
+The audit costs one judge call (a few seconds) per turn, now on the Stop path in Claude Code so the findings land in the same turn; opencode audits on idle and injects a prompt. The judge cannot loop: a blocked Stop is not re-audited (`stop_hook_active`), and opencode injects at most three times per session.
 
 ## Auditor rules
 
@@ -64,7 +64,7 @@ from a transcript are ignored.
 
 ## Not in scope
 
-Auto-prompting the agent to fix itself (loop risk), blocking actions. Skipping audits in headless `claude -p`: the hooks docs list no field or variable that identifies those runs (`CLAUDE_CODE_REMOTE` only marks remote web sessions), so they still audit and the feedback goes unread.
+Auto-prompting the agent to fix itself is now the point, so it is bounded instead: a blocked Stop is not re-audited, and opencode injects at most three times per session. Skipping audits in headless `claude -p`: the hooks docs list no field or variable that identifies those runs (`CLAUDE_CODE_REMOTE` only marks remote web sessions), so they still audit and the feedback goes unread.
 
 ## Layout
 
@@ -72,7 +72,7 @@ One TypeScript core (`src/core/`) holds the audit pipeline; the runtimes are thi
 
 ```mermaid
 flowchart LR
-  Stop["src/claude/stop.ts (Stop hook)"] -->|spawn detached| Child["src/claude/audit.ts"]
+  Stop["src/claude/stop.ts (Stop hook)"] -->|inline, blocks with the findings| Core
   Child --> Core["src/core: audit.ts, prompt.ts, transcript-claude.ts, state.ts"]
   Core --> Judge["src/core/judge-cli.ts: opencode run"]
   Core --> Pending["pending/<session>.txt"]

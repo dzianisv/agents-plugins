@@ -49,10 +49,12 @@ bin/git-rules-review check --command "gh api graphql -f query='mutation { resolv
 
 ## CI gate rules
 
-1. **No push, no check.** Only a successful push in this session arms the guard. A session that only
-   reads code never runs git or `gh` at stop time.
-2. **Record exact SHAs.** After `git push`, `gh stack push|submit|link`, or `git-sign-batch` (without
-   `--dry-run`/`--no-push`), record the pushed branch and its SHA, but only when
+1. **No push or GitHub post, no check.** Only a push or a GitHub write (`gh pr|issue|release` post, a
+   writing `gh api`) in this session arms the guard. A session that only reads code never runs git or
+   `gh` at stop time. A post records the current branch when `refs/heads/<branch>` equals
+   `refs/remotes/origin/<branch>`.
+2. **Record exact SHAs.** After `git push`, `gh stack push|submit|link`, `git-sign-batch` (without
+   `--dry-run`/`--no-push`), or a GitHub write command, record the branch and its SHA, but only when
    `refs/heads/<branch>` equals `refs/remotes/origin/<branch>`. No fetch.
 3. **Check only those commits.** Read check runs and statuses per recorded SHA, not per PR head. A newer
    commit from someone else on the branch does not change the verdict. A recorded commit the branch no

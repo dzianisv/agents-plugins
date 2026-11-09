@@ -7,6 +7,20 @@ export type PushHit =
   | { kind: "sign"; dry: boolean }
   | { kind: "push"; repo: string | null; args: string[] }
   | { kind: "stack" }
+  | { kind: "post" }
+
+const GH_PR_WRITES = new Set(["create", "comment", "review", "edit", "merge", "close", "reopen", "ready"])
+const GH_ISSUE_WRITES = new Set(["create", "comment", "edit", "close", "reopen", "pin", "unpin"])
+const GH_RELEASE_WRITES = new Set(["create", "edit", "upload", "delete"])
+
+/** True when `gh api` args write: a GraphQL mutation, a non-GET method, fields or an input file. */
+function isApiWrite(args: string[]): boolean {
+  const text = args.join(" ")
+  if (args[0] === "graphql") return /\bmutation\b/.test(text)
+  if (/\b-X\s*(?:POST|PATCH|PUT|DELETE)\b/.test(text)) return true
+  if (/--method(?:\s+|=)(?:POST|PATCH|PUT|DELETE)\b/i.test(text)) return true
+  return /(?:^|\s)-[fF](?:\s|$)|--(?:raw-)?field(?:\s|=)|--input(?:\s|$)/.test(text)
+}
 
 /** Splits a command line on `&&`, `||`, `;` and newlines into trimmed segments. */
 export function splitSegments(command: string): string[] {
@@ -69,7 +83,7 @@ function shlexSplit(text: string): string[] | null {
   return tokens
 }
 
-/** Classifies one shell segment as a push, a stack push, a signing batch or nothing. */
+/** Classifies one shell segment as a push, a stack push, a signing batch, a GitHub post or nothing. */
 export function classify(tokens: string[]): PushHit | null {
   for (const token of tokens) {
     if (basename(token) === "git-sign-batch") {
@@ -97,13 +111,20 @@ export function classify(tokens: string[]): PushHit | null {
         return { kind: "push", repo, args: tokens.slice(j + 1) }
       }
     }
-    if (
-      name === "gh" &&
-      i + 2 < tokens.length &&
-      tokens[i + 1] === "stack" &&
-      ["push", "submit", "link"].includes(tokens[i + 2])
-    ) {
-      return { kind: "stack" }
+    if (name === "gh" && i + 1 < tokens.length) {
+      const sub = tokens[i + 1]
+      const verb = tokens[i + 2]
+      if (sub === "pr" && verb && GH_PR_WRITES.has(verb)) return { kind: "post" }
+      if (sub === "issue" && verb && GH_ISSUE_WRITES.has(verb)) return { kind: "post" }
+      if (sub === "release" && verb && GH_RELEASE_WRITES.has(verb)) return { kind: "post" }
+      if (sub === "api" && isApiWrite(tokens.slice(i + 2))) return { kind: "post" }
+      if (
+        sub === "stack" &&
+        i + 2 < tokens.length &&
+        ["push", "submit", "link"].includes(tokens[i + 2])
+      ) {
+        return { kind: "stack" }
+      }
     }
   }
   return null
@@ -122,11 +143,18 @@ export function pushHits(command: string): Array<{ segment: string; hit: PushHit
 // A fast pre-filter for the adapters: it matches the command at a segment start, unlike `pushHits`, so
 // `echo git push` is not treated as a push and the recorder never runs on a read.
 const PUSH =
-  /(?:^|[;&|\n]\s*)(?:[^\s;&|]*\/)?(?:git\s+(?:-C\s+\S+\s+)?push|gh\s+stack\s+(?:push|submit|link)|git-sign-batch)\b/
+  /(?:^|[;&|\n]\s*)(?:[^\s;&|]*\/)?(?:git\s+(?:-C\s+\S+\s+)?push|gh\s+stack\s+(?:push|submit|link)|git-sign-batch|gh\s+pr\s+(?:create|comment|review|edit|merge|close|reopen|ready)|gh\s+issue\s+(?:create|comment|edit|close|reopen|pin|unpin)|gh\s+release\s+(?:create|edit|upload|delete))\b/
+const GH_API = new RegExp("(?:^|[;&|\\n]\\s*)(?:[^\\s;&|]*/)?gh\\s+api\\b")
+const API_WRITE =
+  /(?:\s-X\s*(?:POST|PATCH|PUT|DELETE)\b|\s--method[ =](?:POST|PATCH|PUT|DELETE)\b|\s-[fF]\s|\s--(?:raw-)?field[ =]|\s--input\b)/i
 
-/** True when a command commits, pushes or lands a stack. */
+/** True when a command commits, pushes or writes to GitHub. */
 export function isPushCommand(command: unknown): boolean {
-  return typeof command === "string" && PUSH.test(command)
+  if (typeof command !== "string") return false
+  if (PUSH.test(command)) return true
+  if (!GH_API.test(command)) return false
+  if (/gh\s+api\s+graphql\b/.test(command)) return /\bmutation\b/.test(command)
+  return API_WRITE.test(command)
 }
 
 /** Branches named by a `git push` command line. */

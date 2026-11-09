@@ -28,8 +28,8 @@
     {
       "name": "task-gh-guard",
       "source": "./packages/task-gh-guard",
-      "description": "Blocks the end of a turn while GitHub CI for a commit this session pushed is red or still running.",
-      "version": "0.1.3",
+      "description": "Blocks the end of a turn while GitHub CI for a commit this session pushed is red or still running, and reviews git and GitHub writes against plain-English rules.",
+      "version": "0.1.4",
       "author": {
         "name": "Dzianis Vashchuk"
       }
@@ -38,7 +38,7 @@
       "name": "turn-check",
       "source": "./packages/turn-check",
       "description": "When the agent stops, a cheap model audits the whole conversation against ~/.agents/AGENTS.md. Rule violations are fed back to the agent on your next message.",
-      "version": "0.5.0",
+      "version": "0.7.1",
       "author": {
         "name": "Dzianis Vashchuk"
       }

@@ -47,7 +47,7 @@ v2 differences from v1:
 | `SUPERVISOR_MAX_CHARS` | `60000` |
 | `SUPERVISOR_HOME` | `~/.cache/supervisor` (audit log and Claude Code state; directory 0700, files 0600) |
 
-`SUPERVISOR_JUDGE_TIMEOUT` (seconds): judge limit, default `120` in opencode and `240` in Claude Code.
+`SUPERVISOR_JUDGE_TIMEOUT` (seconds): judge limit, default `240` in both runtimes.
 
 `SUPERVISOR_AUDIT_RUN=1` (opencode v1 only): audit in a headless `opencode run` too. In v1 the plugin stays off there, because `run` exits at idle and the feedback could never be delivered. In v2 the plugin lives in the server, so `run` sessions are audited regardless and this flag has no effect.
 

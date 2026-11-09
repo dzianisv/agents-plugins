@@ -228,6 +228,20 @@ describe("record hook", () => {
     ).toEqual({ "stack/a": first, "stack/b": second })
   })
 
+  test("records the current branch on a GitHub post", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    pushHook("s7", "gh pr comment 12 -m 'thanks'")
+    expect(state("s7").entries).toEqual([expect.objectContaining({ branch: "feature/x", sha })])
+  })
+
+  test("does not record a GitHub post from an unpushed branch", () => {
+    makeRepo()
+    git(repo, "checkout", "-b", "feature/local")
+    pushHook("s8", "gh pr comment 12 -m hi")
+    expect(existsSync(statePath("s8"))).toBe(false)
+  })
+
   test("never breaks the session on junk input", () => {
     const result = spawnSync(bun, [join(claudeDir, "record.ts")], {
       input: "not json",

@@ -12,7 +12,7 @@ import { stateDir } from "../core/state"
 import { notify } from "../shared/notify"
 import { toMsg } from "./messages"
 
-const DEFAULT_JUDGE_TIMEOUT_MS = 120000
+const DEFAULT_JUDGE_TIMEOUT_MS = 240000
 const AUDIT_TITLE = "supervisor audit"
 const STALE_AUDIT_MS = 5 * 60 * 1000
 

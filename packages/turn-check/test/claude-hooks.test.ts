@@ -92,6 +92,21 @@ describe("stop hook", () => {
     expect(outs[4]).toBe("")
   })
 
+  test("the ceiling holds even when the state file is cleared between turns", () => {
+    const extra = { FAKE_REPLY: FAIL_REPLY }
+    const outs: string[] = []
+    for (let i = 0; i < 5; i++) {
+      writeTranscript(env.transcript, [user("fix it", "u1"), assistant([text("done")], `a${i}`)])
+      outs.push(String(env.runHook("stop.ts", payload(), extra).stdout).trim())
+      // The audited marker and the pending note are cleared as the turn progresses; the ceiling,
+      // which lives in its own file, must survive that or the block would re-arm every turn.
+      rmSync(join(env.home, "state", "s1.json"), { force: true })
+      rmSync(join(env.home, "pending", "s1.txt"), { force: true })
+    }
+    expect(outs.filter((out) => out.includes("block"))).toHaveLength(3)
+    expect(outs[4]).toBe("")
+  })
+
   test("the inline wait defaults to 90 seconds", () => {
     expect(inlineTimeoutSeconds({})).toBe(90)
     expect(inlineTimeoutSeconds({ SUPERVISOR_INLINE_TIMEOUT: "30" })).toBe(30)

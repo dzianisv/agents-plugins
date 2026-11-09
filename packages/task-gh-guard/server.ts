@@ -3,7 +3,7 @@ import { bumpNudge, nudgeAllowed, nudgeKey, nudgeText, type Nudges } from "./src
 import { gate, record } from "./src/core/gate"
 import { isPushCommand } from "./src/core/push"
 import { reviewCommand } from "./src/core/review"
-import { statePath } from "./src/core/state"
+import { blockWindow, blocksInWindow, markReported, maxBlocks, statePath } from "./src/core/state"
 import { notify } from "./src/shared/notify"
 
 // v2.0.29 does not emit session.idle; turn-check uses the same three events.
@@ -23,6 +23,14 @@ export default {
     const nudges: Nudges = {}
     const running = new Set<string>()
     const log = (message: string) => notify("task-gh-guard", message)
+
+    /** True when this branch already hit the per-window ceiling, so a new commit cannot re-arm forever. */
+    const capped = (file: string, result: any): boolean => {
+      const now = Math.floor(Date.now() / 1000)
+      const window = blockWindow()
+      const failing = result.entries.filter((entry: any) => entry.status !== "pass")
+      return failing.length > 0 && failing.every((entry: any) => blocksInWindow(file, entry, now, window) >= maxBlocks())
+    }
 
     // The v2 event carries the tool args on `input`; a throw blocks the call and the message reaches the model.
     await ctx.tool.hook("execute.before", async (event: any) => {
@@ -66,8 +74,14 @@ export default {
             if (result.status !== "fail" && result.status !== "pending") continue
             const key = nudgeKey(result.entries)
             if (!key || !nudgeAllowed(result.status, key, nudges)) continue
+            if (capped(file, result)) {
+              log(`CI still red on this branch after ${maxBlocks()} nudges this hour; not nudging again until the window passes.`)
+              continue
+            }
             bumpNudge(result.status, key, nudges)
             await ctx.session.prompt({ sessionID, text: nudgeText(result) })
+            // Record the nudge so the per-branch ceiling also holds across restarts and runtimes.
+            markReported(file, result.entries.filter((entry) => entry.status !== "pass"), Math.floor(Date.now() / 1000))
           } catch (err) {
             log(`gate failed: ${err instanceof Error ? err.message : String(err)}`)
           } finally {

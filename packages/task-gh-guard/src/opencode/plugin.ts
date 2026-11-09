@@ -5,7 +5,7 @@ import { bumpNudge, nudgeAllowed, nudgeKey, nudgeText, type Nudges } from "../co
 import { gate, record, type Gate } from "../core/gate"
 import { isPushCommand } from "../core/push"
 import { reviewCommand } from "../core/review"
-import { statePath } from "../core/state"
+import { blockWindow, blocksInWindow, markReported, maxBlocks, statePath } from "../core/state"
 import { notify } from "../shared/notify"
 
 const TOOLS = new Set(["bash", "shell"])
@@ -32,6 +32,14 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
       path: { id: sessionID },
       body: { parts: [{ type: "text", text: nudgeText(result) }] },
     })
+  }
+
+  /** True when this branch already hit the per-window ceiling, so a new commit cannot re-arm forever. */
+  const capped = (file: string, result: Gate): boolean => {
+    const now = Math.floor(Date.now() / 1000)
+    const window = blockWindow()
+    const failing = result.entries.filter((entry) => entry.status !== "pass")
+    return failing.length > 0 && failing.every((entry) => blocksInWindow(file, entry, now, window) >= maxBlocks())
   }
 
   return {
@@ -69,7 +77,14 @@ export const TaskGhGuard: Plugin = async ({ client, directory }) => {
         const result = await gate(file)
         if (result.status === "pass") return
         if (result.status !== "fail" && result.status !== "pending") return
+        if (capped(file, result)) {
+          log("error", `CI still red after ${maxBlocks()} nudges this hour; not nudging again until the window passes.`)
+          return
+        }
         await nudge(sessionID, result)
+        // Record the nudge so the per-branch ceiling also holds across restarts and runtimes.
+        const now = Math.floor(Date.now() / 1000)
+        markReported(file, result.entries.filter((entry) => entry.status !== "pass"), now)
       } catch (err) {
         log("error", `gate failed: ${err instanceof Error ? err.message : String(err)}`)
       } finally {

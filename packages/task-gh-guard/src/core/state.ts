@@ -114,6 +114,27 @@ export function reported(path: string, entries: ReportEntry[], now: number, wind
   return true
 }
 
+/** Blocks allowed per branch inside one window (default 3), so a new commit cannot re-arm forever. */
+export function maxBlocks(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.TASK_GH_GUARD_MAX_BLOCKS ?? "").trim()
+  if (!/^\+?\d+$/.test(raw)) return 3
+  return Number.parseInt(raw, 10)
+}
+
+/** How many stops this branch already blocked inside the window, across every sha. */
+export function blocksInWindow(path: string, entry: ReportEntry, now: number, window: number): number {
+  if (window <= 0) return 0
+  const seen = readState(path).reported
+  if (!seen || typeof seen !== "object") return 0
+  const prefix = `${repoKey(entry)}|${entry.branch ?? "?"}@`
+  let count = 0
+  for (const [key, value] of Object.entries(seen)) {
+    const at = value?.at
+    if (key.startsWith(prefix) && typeof at === "number" && now - at < window) count++
+  }
+  return count
+}
+
 /** Marks every given commit as reported at `now`. */
 export function markReported(path: string, entries: ReportEntry[], now: number): void {
   const data = readState(path)

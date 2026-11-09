@@ -65,6 +65,11 @@ bin/git-rules-review check --command "gh api graphql -f query='mutation { resolv
    (`TASK_GH_GUARD_BLOCK_WINDOW`, default 3600 seconds), so a new commit still blocks while the same
    commit cannot loop. Pending says "CI pending on `<branch>@<sha7>`". State survives so a later turn
    checks again. opencode nudges at most once for pending and three times for a failure per SHA set.
+   Every nudge and every stop block starts with `[task-gh-guard]`, so the source is obvious.
+6. **Per-branch ceiling.** A branch may block at most `TASK_GH_GUARD_MAX_BLOCKS` times inside one
+   window (default 3), counted across every sha, because a new commit re-arms the per-commit budget and
+   an agent that keeps amending would otherwise be blocked on every turn. Past the ceiling the guard
+   sends one desktop notification and stops blocking until the window passes.
 
 State lives in `~/.agents/state/task-gh-guard/<runtime>-<session_id>.json`.
 

@@ -428,6 +428,26 @@ describe("stop hook", () => {
     expect(existsSync(statePath("s1"))).toBe(false)
   })
 
+  test("a new commit on the same branch does not re-arm past the ceiling", () => {
+    makeRepo()
+    const first = branch("feature/x")
+    scenario({ [first]: checkRuns([{ name: "ci", status: "completed", conclusion: "failure" }]) })
+    pushHook()
+    const notified = join(tmp, "ceiling.txt")
+    const recorder = join(tmp, "ceiling.sh")
+    writeFileSync(recorder, `#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> "${notified}"\n`)
+    chmodSync(recorder, 0o755)
+    const extra = { TASK_GH_GUARD_MAX_BLOCKS: "1", AGENTS_NOTIFY_CMD: recorder }
+    expect(blocked(stop("s1", false, extra)).decision).toBe("block")
+
+    const second = commit("feature/x")
+    scenario({ [second]: checkRuns([{ name: "ci", status: "completed", conclusion: "failure" }]) })
+    pushHook()
+    const third = stop("s1", false, extra)
+    expect(String(third.stdout).trim()).toBe("")
+    expect(readFileSync(notified, "utf8")).toContain("not blocking again")
+  })
+
   test("a repo with no report still blocks", () => {
     makeRepo()
     const sha = branch("feature/x")
@@ -702,6 +722,25 @@ describe("opencode v1 plugin", () => {
       ).rejects.toThrow("task-gh-guard rules: no commit id.")
     })
   })
+
+  test("nudges the session when the turn ends with CI red", async () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    const prompts: any[] = []
+    const c = { ...client(), session: { get: async () => ({ data: {} }), prompt: async (a: any) => void prompts.push(a) } }
+    await withProcessEnv(pluginEnv(), async () => {
+      const { TaskGhGuard } = await import("../src/opencode/plugin")
+      const hooks = (await TaskGhGuard({ client: c, directory: repo } as any)) as any
+      await hooks["tool.execute.before"]({ tool: "bash", callID: "c9", sessionID: "s9" }, { args: { command: "git push origin feature/x" } })
+      await hooks["tool.execute.after"]({ tool: "bash", callID: "c9", sessionID: "s9" })
+      scenario({ [sha]: { check_runs: [{ name: "ci", status: "completed", conclusion: "failure" }] } })
+      await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s9" } } })
+    })
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0].path.id).toBe("s9")
+    expect(prompts[0].body.parts[0].text).toContain("[task-gh-guard]")
+    expect(prompts[0].body.parts[0].text).toContain("CI failed on feature/x@")
+  })
 })
 
 describe("opencode v2 server", () => {
@@ -709,6 +748,9 @@ describe("opencode v2 server", () => {
 
   const fakeCtx = () => {
     const hooks = new Map<string, Hook>()
+    const queue: any[] = []
+    const prompts: any[] = []
+    let waiter: (() => void) | undefined
     const ctx = {
       location: { directory: repo },
       tool: {
@@ -718,21 +760,34 @@ describe("opencode v2 server", () => {
       },
       event: {
         subscribe: async function* (options: { signal?: AbortSignal }) {
-          await new Promise<void>((resolve) => {
-            if (options?.signal?.aborted) resolve()
-            else options?.signal?.addEventListener("abort", () => resolve(), { once: true })
-          })
+          for (;;) {
+            if (options?.signal?.aborted) return
+            if (!queue.length) {
+              await new Promise<void>((resolve) => (waiter = resolve))
+              continue
+            }
+            yield queue.shift()
+          }
         },
       },
-      session: { get: async () => undefined },
+      session: { get: async () => undefined, prompt: async (a: any) => void prompts.push(a) },
     }
-    return { ctx, hooks }
+    const push = (event: any) => {
+      queue.push(event)
+      waiter?.()
+      waiter = undefined
+    }
+    return { ctx, hooks, push, prompts }
   }
 
   const setup = async () => {
-    const { ctx, hooks } = fakeCtx()
+    const { ctx, hooks, push, prompts } = fakeCtx()
     const dispose = (await (await import("../server")).default.setup(ctx)) as (() => void) | undefined
-    return { hooks, dispose }
+    return { hooks, dispose, push, prompts }
+  }
+
+  const waitFor = async (cond: () => boolean) => {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10))
   }
 
   test("denies a write with the rule reason", async () => {

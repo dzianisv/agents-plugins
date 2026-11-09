@@ -387,7 +387,7 @@ describe("stop hook", () => {
     scenario({ [sha]: checkRuns([{ name: "build-and-test", status: "completed", conclusion: "failure" }]) })
     expect(blocked(stop()).decision).toBe("block")
     expect(String(stop().stdout).trim()).toBe("")
-    const keys = Object.keys(state().reported)
+    const keys = Object.keys(JSON.parse(readFileSync(join(stateDir, "budget", "claude-s1.json"), "utf8")))
     expect(keys.some((key) => key.endsWith(`|feature/x@${sha.slice(0, 7)}`))).toBe(true)
   })
 
@@ -466,8 +466,10 @@ describe("stop hook", () => {
     const data = state()
     const entry = data.entries[0]
     data.entries.push({ ...entry, repo: "/tmp/other-repo" })
-    data.reported = { [`${entry.repo}|feature/x@${sha.slice(0, 7)}`]: { at: 2 ** 31 - 1 } }
     writeFileSync(statePath(), JSON.stringify(data))
+    const budgetDir = join(stateDir, "budget")
+    mkdirSync(budgetDir, { recursive: true })
+    writeFileSync(join(budgetDir, "claude-s1.json"), JSON.stringify({ [`${entry.repo}|feature/x@${sha.slice(0, 7)}`]: { at: 2 ** 31 - 1 } }))
     expect(blocked(stop()).decision).toBe("block")
   })
 

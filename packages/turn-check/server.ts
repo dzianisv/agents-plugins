@@ -7,7 +7,7 @@ import { pruneLog, record } from "./src/core/audit-log"
 import { parseModel } from "./src/core/opencode"
 import { DEFAULT_MODEL, isViolationFeedback, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
 import { composeRules, readRules } from "./src/core/rules"
-import { stateDir } from "./src/core/state"
+import { readInjectBudget, stateDir, writeInjectBudget } from "./src/core/state"
 import { countInWindow, mayInject, recordInjection, type Budget } from "./src/shared/inject-limit"
 import { notify } from "./src/shared/notify"
 
@@ -88,7 +88,6 @@ export default {
     const rerun = new Set<string>()
     const pending = new Map<string, string>()
     const injected = new Map<string, { messageID: string; feedback: string }>()
-    const injections: Budget = {}
 
     const log = (message: string) => console.error(`[supervisor] ${message}`)
     const fail = (message: string) => void notify("turn-check", message)
@@ -129,12 +128,14 @@ export default {
     const injectFeedback = async (sessionID: string, text: string) => {
       if (!isViolationFeedback(text)) return
       const now = Math.floor(Date.now() / 1000)
-      // Bounded per session: a judge that keeps finding violations cannot drive an endless loop.
-      if (!mayInject(injections, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
+      // Bounded per session on disk, so a plugin reload cannot reset the ceiling and start a loop.
+      const dir = stateDir()
+      const budget = readInjectBudget(sessionID, dir)
+      if (!mayInject(budget, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
         log(`not injecting again this hour for ${sessionID}: ${MAX_INJECTIONS} findings already delivered`)
         return
       }
-      Object.assign(injections, recordInjection(injections, `${sessionID}|${countInWindow(injections, `${sessionID}|`, now, INJECTION_WINDOW)}`, now))
+      writeInjectBudget(sessionID, recordInjection(budget, `${sessionID}|${countInWindow(budget, `${sessionID}|`, now, INJECTION_WINDOW)}`, now), dir)
       try {
         await ctx.session.prompt({ sessionID, text: `<system-reminder>\n${text}\n</system-reminder>` })
         pending.delete(sessionID)

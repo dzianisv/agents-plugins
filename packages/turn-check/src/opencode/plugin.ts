@@ -7,7 +7,7 @@ import { pruneLog, record } from "../core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
 import { DEFAULT_MODEL, isViolationFeedback } from "../core/prompt"
 import { composeRules, readRules } from "../core/rules"
-import { stateDir } from "../core/state"
+import { readInjectBudget, stateDir, writeInjectBudget } from "../core/state"
 import { countInWindow, mayInject, recordInjection, type Budget } from "../shared/inject-limit"
 import { notify } from "../shared/notify"
 import { toMsg } from "./messages"
@@ -35,7 +35,6 @@ export const Supervisor: Plugin = async ({ client, directory }) => {
   const running = new Set<string>()
   const rerun = new Set<string>()
   const pending = new Map<string, string>()
-  const injections: Budget = {}
   const injected = new Map<string, { messageID: string; feedback: string }>()
   const auditing = new Set<string>()
 
@@ -91,13 +90,14 @@ export const Supervisor: Plugin = async ({ client, directory }) => {
   const injectFeedback = async (sessionID: string, text: string) => {
     if (!isViolationFeedback(text)) return
     const now = Math.floor(Date.now() / 1000)
-    // Bounded per session: a judge that keeps finding violations cannot drive an endless loop.
-    if (!mayInject(injections, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
+    // Bounded per session on disk, so a plugin reload cannot reset the ceiling and start a loop.
+    const dir = stateDir()
+    const budget = readInjectBudget(sessionID, dir)
+    if (!mayInject(budget, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
       log("error", `not injecting again this hour for ${sessionID}: ${MAX_INJECTIONS} findings already delivered`)
       return
     }
-    const next = recordInjection(injections, `${sessionID}|${countInWindow(injections, `${sessionID}|`, now, INJECTION_WINDOW)}`, now)
-    Object.assign(injections, next)
+    writeInjectBudget(sessionID, recordInjection(budget, `${sessionID}|${countInWindow(budget, `${sessionID}|`, now, INJECTION_WINDOW)}`, now), dir)
     try {
       await client.session.prompt({
         path: { id: sessionID },

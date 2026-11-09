@@ -63,6 +63,12 @@ const failing = (sha: string) =>
     JSON.stringify({ repo: SLUG, commits: { [sha]: { check_runs: [{ name: "ci", status: "completed", conclusion: "failure" }] } } }),
   )
 
+const passing = (sha: string) =>
+  writeFileSync(
+    join(ghDir, "scenario.json"),
+    JSON.stringify({ repo: SLUG, commits: { [sha]: { check_runs: [{ name: "ci", status: "completed", conclusion: "success" }] } } }),
+  )
+
 const hook = (script: string, payload: unknown, extra: NodeJS.ProcessEnv = {}) =>
   spawnSync(bun, [join(claudeDir, script)], { input: JSON.stringify(payload), env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 })
 
@@ -131,6 +137,23 @@ describe("claude code loop probe", () => {
     expect(blocks).toBeLessThanOrEqual(CEILING)
   })
 
+  test("a state file deleted by a passing gate does not re-arm the block", () => {
+    makeRepo()
+    let blocks = 0
+    for (let turn = 0; turn < 10; turn++) {
+      const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
+      failing(sha)
+      pushHook()
+      if (blocked(stop())) blocks++
+      // The commit then goes green, so the next stop's gate() deletes the state file: the exact
+      // production loop, where the ceiling used to reset with the state and re-arm on the next push.
+      passing(sha)
+      stop()
+      expect(existsSync(join(stateDir, "claude-s1.json"))).toBe(false)
+    }
+    expect(blocks).toBeLessThanOrEqual(CEILING)
+  })
+
   test("ten turns on one failing commit block once", () => {
     makeRepo()
     const sha = branch("feature/x")
@@ -170,6 +193,63 @@ describe("opencode loop probe", () => {
         process.env = saved
       }
     })()
+    expect(prompts.length).toBeLessThanOrEqual(CEILING)
+  })
+
+  test("reloading the plugin each turn cannot re-arm past the ceiling", async () => {
+    makeRepo()
+    const prompts: unknown[] = []
+    const client = {
+      app: { log: async () => ({}) },
+      tui: { showToast: async () => {} },
+      session: { get: async () => ({ data: {} }), prompt: async (a: unknown) => void prompts.push(a) },
+    }
+    const saved = { ...process.env }
+    Object.assign(process.env, pluginEnv())
+    try {
+      for (let turn = 0; turn < 10; turn++) {
+        const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
+        failing(sha)
+        // A fresh plugin instance each turn is a reload: the in-memory nudge budget resets, so only
+        // the on-disk ceiling can hold the line.
+        const { TaskGhGuard } = await import("../src/opencode/plugin")
+        const hooks = (await TaskGhGuard({ client, directory: repo } as never)) as never as Record<string, (a: never, b?: never) => Promise<void>>
+        await hooks["tool.execute.before"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never, { args: { command: "git push origin feature/x" } } as never)
+        await hooks["tool.execute.after"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never)
+        await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
+      }
+    } finally {
+      process.env = saved
+    }
+    expect(prompts.length).toBeLessThanOrEqual(CEILING)
+  })
+
+  test("a state file deleted by a passing gate does not re-arm the nudge", async () => {
+    makeRepo()
+    const prompts: unknown[] = []
+    const client = {
+      app: { log: async () => ({}) },
+      tui: { showToast: async () => {} },
+      session: { get: async () => ({ data: {} }), prompt: async (a: unknown) => void prompts.push(a) },
+    }
+    const saved = { ...process.env }
+    Object.assign(process.env, pluginEnv())
+    try {
+      const { TaskGhGuard } = await import("../src/opencode/plugin")
+      const hooks = (await TaskGhGuard({ client, directory: repo } as never)) as never as Record<string, (a: never, b?: never) => Promise<void>>
+      for (let turn = 0; turn < 10; turn++) {
+        const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
+        failing(sha)
+        await hooks["tool.execute.before"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never, { args: { command: "git push origin feature/x" } } as never)
+        await hooks["tool.execute.after"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never)
+        await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
+        // The commit then goes green: the next idle calls gate(), which deletes the state file.
+        passing(sha)
+        await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
+      }
+    } finally {
+      process.env = saved
+    }
     expect(prompts.length).toBeLessThanOrEqual(CEILING)
   })
 

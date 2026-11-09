@@ -119,6 +119,14 @@ describe("auditSession", () => {
     expect(readFileSync(pendingPath("s1"), "utf8").startsWith("turn-check ERROR:")).toBe(true)
   })
 
+  test("a transient transport error is retried once and can still pass", async () => {
+    process.env.FAKE_MODE = "transport-once"
+    process.env.FAKE_ONCE_FILE = join(env.tmp, "transport-once")
+    process.env.FAKE_REPLY = PASS_REPLY
+    expect(await auditSession("s1", env.transcript)).toBe("pass")
+    expect(env.audits()[0].verdict).toBe("PASS")
+  })
+
   test("a nonzero exit is a loud error with stderr", async () => {
     process.env.FAKE_MODE = "exit2"
     expect(await auditSession("s1", env.transcript)).toBe("error")

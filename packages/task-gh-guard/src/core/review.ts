@@ -225,14 +225,20 @@ export async function reviewCommand(command: string, env: NodeJS.ProcessEnv = pr
   return verdict.reason.startsWith("rule review skipped") ? verdict.reason : null
 }
 
+/** True when the cwd is a judge temp dir, i.e. the review is running inside the judge's own session. */
+function isJudgeDir(dir: string): boolean {
+  return dir.startsWith(join(tmpdir(), "tgg-review-"))
+}
+
 /** Reviews one command; a broken review fails open with a `rule review skipped` reason. */
-export async function check(command: string, env: NodeJS.ProcessEnv = process.env): Promise<Review> {
+export async function check(command: string, env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): Promise<Review> {
   try {
     ensureConfig(env)
   } catch (err) {
     return { decision: "skip", reason: `rule review skipped: ${err instanceof Error ? err.message : String(err)}` }
   }
-  if (env.TASK_GH_GUARD_CHILD === "1" || env.TASK_GH_GUARD_REVIEW === "0") {
+  // The child flag only silences the judge's own session; a leaked flag must not disable reviews elsewhere.
+  if ((env.TASK_GH_GUARD_CHILD === "1" && isJudgeDir(cwd)) || env.TASK_GH_GUARD_REVIEW === "0") {
     return { decision: "skip", reason: "review disabled" }
   }
   if (!needsReview(command)) return { decision: "skip", reason: "not a git write" }

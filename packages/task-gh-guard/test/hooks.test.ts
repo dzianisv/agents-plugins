@@ -384,6 +384,16 @@ describe("stop hook", () => {
     expect(blocked(stop("s1", false, { TASK_GH_GUARD_BLOCK_WINDOW: "0" })).decision).toBe("block")
   })
 
+  test("a stale GH_TOKEN is retried with gh's own auth", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    scenario({ [sha]: { check_runs: [{ name: "ci", status: "completed", conclusion: "success" }] } })
+    pushHook()
+    const result = stop("s1", false, { GH_TOKEN: "ghp_expired", FAKE_GH_BAD_TOKEN: "1" })
+    expect(String(result.stdout)).toBe("")
+    expect(existsSync(statePath("s1"))).toBe(false)
+  })
+
   test("a repo with no report still blocks", () => {
     makeRepo()
     const sha = branch("feature/x")

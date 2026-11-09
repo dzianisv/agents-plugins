@@ -226,8 +226,20 @@ export async function record(
   return { recorded, skipped }
 }
 
+/** gh env without an inherited GH_TOKEN/GITHUB_TOKEN, so gh falls back to its own keyring auth. */
+function ghEnvWithoutToken(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  delete env.GH_TOKEN
+  delete env.GITHUB_TOKEN
+  return env
+}
+
 async function ghJson(args: string[], timeout = 60_000): Promise<{ doc: unknown; error: string | null }> {
-  const result = await run("gh", args, { timeout })
+  let result = await run("gh", args, { timeout })
+  // A stale exported token must not wedge the gate: retry once with gh's own configured auth.
+  if (result.code !== 0 && /Bad credentials/i.test(`${result.stderr}\n${result.stdout}`)) {
+    result = await run("gh", args, { timeout, env: ghEnvWithoutToken() })
+  }
   if (result.code !== 0) {
     return { doc: null, error: (result.stderr || result.stdout || `gh exited ${result.code}`).trim().slice(0, 300) }
   }

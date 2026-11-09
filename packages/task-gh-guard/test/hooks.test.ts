@@ -149,6 +149,9 @@ beforeEach(() => {
     AGENTS_NOTIFY_CMD: "true",
     AGENTS_NOTIFY_STATE_DIR: join(tmp, "notify-state"),
   }
+  delete env.TASK_GH_GUARD_CHILD
+  delete env.TASK_GH_GUARD_REVIEW
+  delete env.TASK_GH_GUARD_ENABLED
   scenario({})
 })
 
@@ -250,6 +253,37 @@ describe("record hook", () => {
     })
     expect(result.status).toBe(0)
     expect(String(result.stdout)).toBe("")
+  })
+})
+
+describe("session-end hook", () => {
+  test("reports a session that ended with CI still red", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    scenario({ [sha]: { check_runs: [{ name: "ci", status: "completed", conclusion: "failure" }] } })
+    pushHook("s9")
+    const notified = join(tmp, "ended.txt")
+    const recorder = join(tmp, "ended.sh")
+    writeFileSync(recorder, `#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> "${notified}"\n`)
+    chmodSync(recorder, 0o755)
+    const result = hook("session-end.ts", { session_id: "s9", cwd: repo }, { AGENTS_NOTIFY_CMD: recorder })
+    expect(result.status).toBe(0)
+    const [title, message] = readFileSync(notified, "utf8").trim().split("|")
+    expect(title).toBe("task-gh-guard")
+    expect(message).toContain("session ended with CI failed")
+  })
+
+  test("stays silent when every recorded commit passes", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    scenario({ [sha]: { check_runs: [{ name: "ci", status: "completed", conclusion: "success" }] } })
+    pushHook("s10")
+    const notified = join(tmp, "ended-pass.txt")
+    const recorder = join(tmp, "ended-pass.sh")
+    writeFileSync(recorder, `#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> "${notified}"\n`)
+    chmodSync(recorder, 0o755)
+    expect(hook("session-end.ts", { session_id: "s10", cwd: repo }, { AGENTS_NOTIFY_CMD: recorder }).status).toBe(0)
+    expect(existsSync(notified)).toBe(false)
   })
 })
 

@@ -68,6 +68,22 @@ bin/git-rules-review check --command "gh api graphql -f query='mutation { resolv
 
 State lives in `~/.agents/state/task-gh-guard/<runtime>-<session_id>.json`.
 
+A `gh` call that returns `Bad credentials` (an exported `GH_TOKEN` that has expired) is retried once
+with `GH_TOKEN` and `GITHUB_TOKEN` removed, so gh's own keyring auth is used and a stale token cannot
+wedge a session. The judge subprocess retries once on a transport or socket drop.
+
+Claude Code also runs `src/claude/session-end.ts`: when a session ends with CI still red or pending, it
+sends a desktop notification, so an interrupted or abandoned turn is not silent. opencode has no
+session-end event; its nudge is the equivalent.
+
+## Plugin hygiene
+
+`scripts/plugin-hygiene.ts` scans every package source for the failure classes we have hit, and
+`test/plugin-hygiene.test.ts` fails the build when one comes back: a `*_CHILD` env marker that
+disables a plugin outside its own judge directory, a `gh` call without the stale-token fallback, a
+judge subprocess without a transient retry, and a judge or review timeout below 120 seconds. CI runs
+it in the root test job and runs both packages with `bun test` in the `Plugin packages (bun)` job.
+
 ## Install
 
 Claude Code: add this repository as a marketplace, then install the plugin. After a change, bump

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { utimesSync } from "node:fs"
 import { main as promptMain } from "../src/claude/prompt"
@@ -40,9 +41,10 @@ describe("stop hook", () => {
   })
 
   test("the guards skip the audit", () => {
+    const judgeCwd = mkdtempSync(join(tmpdir(), "supervisor-judge-"))
     const cases: Array<[string, Record<string, string>, unknown]> = [
       ["disabled", { SUPERVISOR_ENABLED: "0" }, payload()],
-      ["child env", { SUPERVISOR_CHILD: "1" }, payload()],
+      ["child env", { SUPERVISOR_CHILD: "1" }, payload({ cwd: judgeCwd })],
       ["stop_hook_active", {}, payload({ stop_hook_active: true })],
       ["missing transcript", {}, payload({ transcript_path: join(env.home, "none.jsonl") })],
       ["no transcript path", {}, { session_id: "s1" }],
@@ -56,6 +58,17 @@ describe("stop hook", () => {
       const code = stopMain(JSON.stringify(input), { env: { ...process.env, ...overrides }, spawn })
       expect([name, code, calls.length]).toEqual([name, 0, 0])
     }
+    rmSync(judgeCwd, { recursive: true, force: true })
+  })
+
+  test("a leaked child flag outside a judge dir still audits", () => {
+    const calls: unknown[] = []
+    const spawn: SpawnFn = (command, args, options) => {
+      calls.push({ command, args, options })
+      return { unref: () => {} }
+    }
+    expect(stopMain(JSON.stringify(payload()), { env: { ...process.env, SUPERVISOR_CHILD: "1" }, spawn })).toBe(0)
+    expect(calls).toHaveLength(1)
   })
 
   test("bad stdin exits zero", () => {
@@ -241,7 +254,7 @@ describe("hooks file and manifest", () => {
 
   test("the plugin manifest names turn-check", () => {
     const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))
-    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.1"])
+    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.2"])
     expect(manifest.author).toEqual({ name: "Dzianis Vashchuk" })
   })
 })

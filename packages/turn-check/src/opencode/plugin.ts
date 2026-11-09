@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { auditOnce, type AuditStore } from "../core/audit"
 import { pruneLog, record } from "../core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
-import { DEFAULT_MODEL, ERROR_PREFIX } from "../core/prompt"
+import { DEFAULT_MODEL, isViolationFeedback } from "../core/prompt"
 import { stateDir } from "../core/state"
 import { notify } from "../shared/notify"
 import { toMsg } from "./messages"
@@ -87,7 +87,7 @@ export const Supervisor: Plugin = async ({ client }) => {
 
   /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
   const injectFeedback = async (sessionID: string, text: string) => {
-    if (!text.trim() || text.startsWith(ERROR_PREFIX)) return
+    if (!isViolationFeedback(text)) return
     if ((injections.get(sessionID) ?? 0) >= MAX_INJECTIONS) return
     injections.set(sessionID, (injections.get(sessionID) ?? 0) + 1)
     try {

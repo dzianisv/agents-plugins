@@ -30,6 +30,7 @@ describe("stop hook", () => {
     expect([result.status, result.stderr]).toEqual([0, ""])
     const out = JSON.parse(result.stdout)
     expect(out.decision).toBe("block")
+    expect(out.reason).toContain("[turn-check]")
     expect(out.reason).toContain("Max 6 lines")
     expect(existsSync(pendingPath("s1"))).toBe(false)
     expect(env.audits()[0].verdict).toBe("FAIL")

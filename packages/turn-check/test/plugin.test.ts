@@ -89,6 +89,7 @@ test("idle audit flags a violation, toasts, and injects the findings immediately
 
   expect(calls.injected[0].path.id).toBe("s1")
   const injected = calls.injected[0].body.parts[0].text
+  expect(injected).toContain("[turn-check]")
   expect(injected).toContain("<system-reminder>")
   expect(injected).toContain("Replies max 6 lines")
 
@@ -216,6 +217,15 @@ test("the findings are injected immediately and never re-added to a user message
   const real = { messages: [userTurn("c5", "s8")] }
   await transform({}, real)
   expect(real.messages[0].parts).toHaveLength(1)
+})
+
+test("an audit error is never injected", async () => {
+  const { client, calls } = fakeClient({ verdict: "looks fine to me" })
+  const hooks: any = await Supervisor({ client } as any)
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s10" } } })
+  await waitFor(() => calls.toast.length > 0)
+  await new Promise((r) => setTimeout(r, 50))
+  expect(calls.injected).toHaveLength(0)
 })
 
 test("a refused injection keeps the note for the next user message", async () => {

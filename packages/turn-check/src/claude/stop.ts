@@ -6,7 +6,7 @@ import { spawn } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { ERROR_PREFIX } from "../core/prompt"
+import { isViolationFeedback } from "../core/prompt"
 import { cliJudge } from "../core/judge-cli"
 import { clearPending, parseHookInput, readPending, safeSessionId, stateDir, type Env } from "../core/state"
 import { auditSession, modelName, run, settleSeconds, type RunOptions } from "./audit"
@@ -72,9 +72,9 @@ export async function main(
   await run(sessionID, transcript, { env, once })
   const feedback = readPending(sessionID, dir).trim()
   if (!feedback) return 0
-  // An audit error (a judge that timed out inside the cap, or a broken call) is not a violation: let the
-  // detached child finish it and leave the note for the next prompt instead of blocking.
-  if (feedback.startsWith(ERROR_PREFIX)) {
+  // An audit error is not a violation, and an empty note is not injected: let the detached child finish
+  // the error case and leave the note for the next prompt instead of blocking.
+  if (!isViolationFeedback(feedback)) {
     spawnAudit(sessionID, transcript, { env, spawn: options.spawn })
     return 0
   }

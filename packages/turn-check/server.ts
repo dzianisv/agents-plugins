@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { auditOnce, type AuditStore } from "./src/core/audit"
 import { pruneLog, record } from "./src/core/audit-log"
 import { parseModel } from "./src/core/opencode"
-import { DEFAULT_MODEL, ERROR_PREFIX, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
+import { DEFAULT_MODEL, isViolationFeedback, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
 import { stateDir } from "./src/core/state"
 import { notify } from "./src/shared/notify"
 
@@ -124,7 +124,7 @@ export default {
 
     /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
     const injectFeedback = async (sessionID: string, text: string) => {
-      if (!text.trim() || text.startsWith(ERROR_PREFIX)) return
+      if (!isViolationFeedback(text)) return
       if ((injections.get(sessionID) ?? 0) >= MAX_INJECTIONS) return
       injections.set(sessionID, (injections.get(sessionID) ?? 0) + 1)
       try {

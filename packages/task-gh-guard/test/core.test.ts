@@ -17,7 +17,9 @@ import { bumpNudge, nudgeAllowed, nudgeKey, nudgeText, stopReason, type Nudges }
 import { classify, isPushCommand, pushBranches, pushHits, splitSegments } from "../src/core/push"
 import {
   blockWindow,
+  blocksInWindow,
   markReported,
+  maxBlocks,
   readState,
   reported,
   safeSessionID,
@@ -182,6 +184,36 @@ describe("dropSuperseded", () => {
   })
 })
 
+describe("block ceiling", () => {
+  test("maxBlocks defaults to 3 and reads the env", () => {
+    expect(maxBlocks({})).toBe(3)
+    expect(maxBlocks({ TASK_GH_GUARD_MAX_BLOCKS: "1" })).toBe(1)
+    expect(maxBlocks({ TASK_GH_GUARD_MAX_BLOCKS: "0" })).toBe(0)
+    expect(maxBlocks({ TASK_GH_GUARD_MAX_BLOCKS: "x" })).toBe(3)
+  })
+
+  test("blocksInWindow counts this branch across every sha, inside the window only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tgg-ceiling-"))
+    const path = join(dir, "state.json")
+    writeState(path, {
+      version: 1,
+      entries: [],
+      reported: {
+        "/r|b@aaa": { at: 100 },
+        "/r|b@bbb": { at: 200 },
+        "/r|other@ccc": { at: 300 },
+        "/r|b@ddd": { at: 10 },
+      },
+    })
+    expect(blocksInWindow(path, { repo: "/r", branch: "b" }, 250, 3600)).toBe(3)
+    expect(blocksInWindow(path, { repo: "/r", branch: "b" }, 4000, 3600)).toBe(0)
+    expect(blocksInWindow(path, { repo: "/r", branch: "b" }, 250, 0)).toBe(0)
+    expect(blocksInWindow(path, { repo: "/r", branch: "other" }, 250, 3600)).toBe(1)
+    expect(blocksInWindow(path, { repo: "/elsewhere", branch: "b" }, 250, 3600)).toBe(0)
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
 describe("blockWindow", () => {
   test.each([
     [undefined, 3600],
@@ -288,15 +320,15 @@ describe("nudges", () => {
 })
 
 describe("nudge texts", () => {
-  test("tells the agent what to say per status", () => {
+  test("tells the agent what to say per status, prefixed with the plugin name", () => {
     expect(nudgeText({ status: "pending", message: "CI pending on x", entries: [] })).toBe(
-      "CI pending on x\n\nSay it is pending; do not claim done.",
+      "[task-gh-guard] CI pending on x\n\nSay it is pending; do not claim done.",
     )
     expect(nudgeText({ status: "fail", message: "CI failed on x", entries: [] })).toBe(
-      "CI failed on x\n\nFix the failing check or report it as a known failure; do not claim the task is done.",
+      "[task-gh-guard] CI failed on x\n\nFix the failing check or report it as a known failure; do not claim the task is done.",
     )
     expect(stopReason({ status: "pending", message: "", entries: [] })).toContain(
-      "Say it is pending; do not claim done.",
+      "[task-gh-guard]",
     )
     expect(stopReason({ status: "fail", message: "", entries: [] })).toContain(
       "Fix the failing check or report it as a known failure",

@@ -1,169 +1,183 @@
 /**
- * opencode-auto-limit-nudge Plugin — Unit Tests
+ * opencode-auto-limit-resume Plugin — Unit Tests
  *
- * Tests the plugin's internal logic without needing a live OpenCode server.
- * Uses the test-helpers extraction pattern (same as telegram.test-helpers.ts).
+ * Tests the pure decision logic without a live OpenCode server. Uses the
+ * test-helpers extraction pattern (the plugin file may only export default).
  *
- * Run: npm test (included in the test suite)
+ * Run: npm test
  */
 
 import assert from "node:assert"
 import {
-  modelLabel,
-  formatNudgeMessage,
-  isRetryStatus,
-  isModelSwitched,
-  isSuppressed,
-  AutoLimitNudgeConfig,
-} from "../opencode-auto-limit-nudge.test-helpers"
+  AUTO_RESUME_PREFIX,
+  DEFAULTS,
+  classifyFailure,
+  nextDelayMs,
+  parseResetAt,
+  resolveConfig,
+} from "../opencode-auto-limit-nudge.test-helpers.ts"
 
-// ============================================================================
-// HELPERS
-// ============================================================================
+const NOW = 1_800_000_000_000
 
-function makeRetryEvent(overrides: any = {}) {
-  return {
-    type: "session.status",
-    properties: {
-      sessionID: "ses_test123",
-      status: {
-        type: "retry",
-        attempt: 1,
-        message: "rate_limit_exceeded",
-        next: Date.now() + 60_000,
-        ...overrides.status,
+// Real payload captured from opencode 2.2.5 for an exhausted OpenAI plan.
+const codexQuotaError = {
+  type: "provider.quota",
+  message: "The usage limit has been reached",
+  response: {
+    status_code: 429,
+    body: JSON.stringify({
+      type: "error",
+      error: {
+        type: "usage_limit_reached",
+        message: "The usage limit has been reached",
+        resets_at: 1_800_189_007,
+        limit_window_minutes: 10080,
+        resets_in_seconds: 189_007,
       },
-      ...overrides,
+    }),
+    headers: {
+      "X-Codex-Plan-Type": "prolite",
+      "X-Codex-Primary-Reset-At": "1800189007",
+      "X-Codex-Primary-Reset-After-Seconds": "189007",
     },
-  }
+  },
 }
 
-function makeModelSwitchEvent(overrides: any = {}) {
-  return {
-    type: "session.next.model.switched",
-    properties: {
-      sessionID: "ses_test123",
-      timestamp: Date.now(),
-      messageID: "msg_1",
-      model: {
-        id: "deepseek-v4.1-flash:free",
-        providerID: "deepseek",
-        ...overrides.model,
-      },
-      ...overrides,
-    },
-  }
+// Captured from opencode free-tier exhaustion.
+const freeTierError = {
+  type: "provider.quota",
+  message:
+    "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go",
 }
 
-// ============================================================================
-// TESTS
-// ============================================================================
-
-describe("opencode-auto-limit-nudge unit: helpers", () => {
-  // -- modelLabel -----------------------------------------------------------
-
-  it("modelLabel: formats provider/model when both present", () => {
-    assert.strictEqual(modelLabel("deepseek", "deepseek-v4.1-flash:free"), "deepseek/deepseek-v4.1-flash:free")
+describe("auto-limit-resume: classifyFailure", () => {
+  it("retries provider.quota failures", () => {
+    const verdict = classifyFailure(codexQuotaError, NOW)
+    assert.strictEqual(verdict.retryable, true)
+    assert.strictEqual(verdict.resetsAt, 1_800_189_007_000)
   })
 
-  it("modelLabel: returns modelID only when providerID absent", () => {
-    assert.strictEqual(modelLabel(undefined, "gpt-4o"), "gpt-4o")
+  it("retries free-tier usage limit failures", () => {
+    assert.strictEqual(classifyFailure(freeTierError).retryable, true)
   })
 
-  it("modelLabel: returns providerID only when modelID absent", () => {
-    assert.strictEqual(modelLabel("openai", undefined), "openai")
+  it("retries 429 API errors even without a known type", () => {
+    const error = { type: "api.error", message: "Too Many Requests", response: { status_code: 429 } }
+    assert.strictEqual(classifyFailure(error).retryable, true)
   })
 
-  it("modelLabel: returns fallback when both absent", () => {
-    assert.strictEqual(modelLabel(), "the active model")
+  it("does not retry auth failures", () => {
+    const error = { type: "provider.auth", message: "unauthorized" }
+    assert.strictEqual(classifyFailure(error).retryable, false)
   })
 
-  // -- formatNudgeMessage ---------------------------------------------------
-
-  it("formatNudgeMessage: includes the label and limit message", () => {
-    const result = formatNudgeMessage("deepseek/deepseek-v4.1-flash:free", "rate_limit_exceeded")
-    assert.ok(result.includes("deepseek/deepseek-v4.1-flash:free hit a limit: rate_limit_exceeded"))
-    assert.ok(result.includes("Will retry automatically."))
+  it("does not retry the stale-client free-model error", () => {
+    const error = {
+      type: "provider.quota",
+      message: "This version of OpenCode Desktop no longer supports free models. Update to the latest version.",
+    }
+    const verdict = classifyFailure(error)
+    assert.strictEqual(verdict.retryable, false)
+    assert.strictEqual(verdict.reason, "permanent")
   })
 
-  it("formatNudgeMessage: includes reset hint when next is set and hint enabled", () => {
-    const next = Date.now() + 5 * 60 * 1000
-    const result = formatNudgeMessage("the active model", "quota_exhausted", next, true)
-    assert.ok(result.includes("Expected reset ~"))
-  })
-
-  it("formatNudgeMessage: omits reset hint when includeResetHint is false", () => {
-    const next = Date.now() + 5 * 60 * 1000
-    const result = formatNudgeMessage("the active model", "quota_exhausted", next, false)
-    assert.ok(!result.includes("Expected reset"))
-  })
-
-  it("formatNudgeMessage: omits reset hint when next is missing", () => {
-    const result = formatNudgeMessage("the active model", "quota_exhausted", undefined, true)
-    assert.ok(!result.includes("Expected reset"))
-  })
-
-  // -- isRetryStatus --------------------------------------------------------
-
-  it("isRetryStatus: returns true for session.status retry event", () => {
-    assert.strictEqual(isRetryStatus(makeRetryEvent()), true)
-  })
-
-  it("isRetryStatus: returns false for session.idle event", () => {
-    assert.strictEqual(isRetryStatus({ type: "session.idle", properties: {} }), false)
-  })
-
-  it("isRetryStatus: returns false for session.status busy event", () => {
-    const event = makeRetryEvent({ status: { type: "busy" } })
-    assert.strictEqual(isRetryStatus(event), false)
-  })
-
-  it("isRetryStatus: returns false when status is missing", () => {
-    assert.strictEqual(isRetryStatus({ type: "session.status", properties: {} }), false)
-  })
-
-  // -- isModelSwitched ------------------------------------------------------
-
-  it("isModelSwitched: returns true for session.next.model.switched event", () => {
-    assert.strictEqual(isModelSwitched(makeModelSwitchEvent()), true)
-  })
-
-  it("isModelSwitched: returns false for session.status event", () => {
-    assert.strictEqual(isModelSwitched(makeRetryEvent()), false)
-  })
-
-  // -- isSuppressed ---------------------------------------------------------
-
-  it("isSuppressed: returns true within the suppress window", () => {
-    assert.strictEqual(isSuppressed(1000, 500, 60_000), true)
-  })
-
-  it("isSuppressed: returns false outside the suppress window", () => {
-    assert.strictEqual(isSuppressed(70_000, 500, 60_000), false)
-  })
-
-  it("isSuppressed: returns false when no previous nudge", () => {
-    assert.strictEqual(isSuppressed(1000, undefined, 60_000), false)
-  })
-
-  it("isSuppressed: returns false at exact boundary", () => {
-    assert.strictEqual(isSuppressed(60_000, 0, 60_000), false)
+  it("does not retry aborted runs", () => {
+    assert.strictEqual(classifyFailure({ type: "message.aborted", message: "aborted by user" }).retryable, false)
   })
 })
 
-describe("opencode-auto-limit-nudge unit: config defaults", () => {
-  it("AutoLimitNudgeConfig allows overriding toast duration", () => {
-    const config: AutoLimitNudgeConfig = { toastDurationMs: 3000 }
-    assert.strictEqual(config.toastDurationMs, 3000)
+describe("auto-limit-resume: parseResetAt", () => {
+  it("reads epoch seconds from the response body", () => {
+    const error = { response: { body: JSON.stringify({ error: { resets_at: 1_800_000_600 } }) } }
+    assert.strictEqual(parseResetAt(error, NOW), 1_800_000_600_000)
   })
 
-  it("AutoLimitNudgeConfig allows disabling reset hint", () => {
-    const config: AutoLimitNudgeConfig = { includeResetHint: false }
-    assert.strictEqual(config.includeResetHint, false)
+  it("reads relative seconds from response headers", () => {
+    const error = { response: { headers: { "retry-after": "120" } } }
+    assert.strictEqual(parseResetAt(error, NOW), NOW + 120_000)
   })
 
-  it("AutoLimitNudgeConfig allows disabling model label", () => {
-    const config: AutoLimitNudgeConfig = { includeModel: false }
-    assert.strictEqual(config.includeModel, false)
+  it("reads an inline try-again window from the message", () => {
+    const error = { message: "Rate limited, try again in 5m" }
+    assert.strictEqual(parseResetAt(error, NOW), NOW + 300_000)
+  })
+
+  it("prefers the earliest plausible future timestamp", () => {
+    const error = {
+      response: { body: JSON.stringify({ error: { resets_at: 1_800_003_600, resets_in_seconds: 60 } }) },
+    }
+    assert.strictEqual(parseResetAt(error, NOW), NOW + 60_000)
+  })
+
+  it("ignores stale timestamps in the past", () => {
+    const error = { response: { body: JSON.stringify({ error: { resets_at: 1_700_000_000 } }) } }
+    assert.strictEqual(parseResetAt(error, NOW), undefined)
+  })
+
+  it("returns undefined when nothing reports a reset", () => {
+    assert.strictEqual(parseResetAt(freeTierError, NOW), undefined)
+  })
+})
+
+describe("auto-limit-resume: nextDelayMs", () => {
+  const cfg = DEFAULTS
+
+  it("backs off exponentially without a reset hint", () => {
+    assert.strictEqual(nextDelayMs({ attempt: 1, now: NOW, cfg }), 60_000)
+    assert.strictEqual(nextDelayMs({ attempt: 2, now: NOW, cfg }), 120_000)
+    assert.strictEqual(nextDelayMs({ attempt: 3, now: NOW, cfg }), 240_000)
+  })
+
+  it("caps the backoff at maxDelayMs", () => {
+    assert.strictEqual(nextDelayMs({ attempt: 20, now: NOW, cfg }), cfg.maxDelayMs)
+  })
+
+  it("honours a provider reset time when provided", () => {
+    const delay = nextDelayMs({ attempt: 1, now: NOW, cfg, resetsAt: NOW + 120_000 })
+    assert.strictEqual(delay, 125_000)
+  })
+
+  it("adds a small cushion to a near-immediate reset", () => {
+    assert.strictEqual(nextDelayMs({ attempt: 1, now: NOW, cfg, resetsAt: NOW + 1_000 }), 6_000)
+  })
+
+  it("refuses to schedule when the reset is beyond the retry window", () => {
+    const resetsAt = NOW + 2 * 24 * 3600_000
+    assert.strictEqual(nextDelayMs({ attempt: 1, now: NOW, cfg, resetsAt }), undefined)
+  })
+
+  it("ignores the reset hint when respectProviderReset is false", () => {
+    const local = { ...cfg, respectProviderReset: false }
+    assert.strictEqual(nextDelayMs({ attempt: 1, now: NOW, cfg: local, resetsAt: NOW + 120_000 }), 60_000)
+  })
+})
+
+describe("auto-limit-resume: resolveConfig", () => {
+  it("returns defaults for empty input", () => {
+    assert.deepStrictEqual(resolveConfig(undefined), DEFAULTS)
+  })
+
+  it("keeps valid overrides", () => {
+    const cfg = resolveConfig({ maxAttempts: 5, baseDelayMs: 1_000 })
+    assert.strictEqual(cfg.maxAttempts, 5)
+    assert.strictEqual(cfg.baseDelayMs, 1_000)
+    assert.strictEqual(cfg.maxDelayMs, DEFAULTS.maxDelayMs)
+  })
+
+  it("drops values of the wrong type", () => {
+    const cfg = resolveConfig({ maxAttempts: "lots" as any, enabled: "yes" as any })
+    assert.strictEqual(cfg.maxAttempts, DEFAULTS.maxAttempts)
+    assert.strictEqual(cfg.enabled, true)
+  })
+
+  it("can be disabled", () => {
+    assert.strictEqual(resolveConfig({ enabled: false }).enabled, false)
+  })
+})
+
+describe("auto-limit-resume: continuation marker", () => {
+  it("uses a stable prefix that the plugin can recognise on the wire", () => {
+    assert.strictEqual(AUTO_RESUME_PREFIX, "[auto-resume]")
+    assert.ok(`${AUTO_RESUME_PREFIX} The previous run stopped...`.startsWith(AUTO_RESUME_PREFIX))
   })
 })

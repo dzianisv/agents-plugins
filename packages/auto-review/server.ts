@@ -22,8 +22,13 @@ import {
   resolveWorkModel,
   toSessionMessages,
 } from "./core"
+import { countInWindow, mayInject, recordInjection, type Budget } from "../shared/src/inject-limit"
 
 const TRIGGERS = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"])
+/** Review prompts allowed per parent session per window, so reviews cannot drive an endless loop. */
+const MAX_REVIEWS = 3
+/** The window the review ceiling is counted over, in seconds. */
+const INJECTION_WINDOW = 3600
 
 /** opencode v2 entry: review a finished turn with a different model. */
 export default {
@@ -41,6 +46,8 @@ export default {
     const active = new Set<string>()
     const reviewSessionIDs = new Set<string>()
     const reviewedMessageBySession = new Map<string, string>()
+    // Injection budget: at most MAX_REVIEWS review prompts per parent session per window.
+    let injections: Budget = {}
 
     const availableModels = async (): Promise<ModelSpec[]> => {
       const out: ModelSpec[] = []
@@ -122,6 +129,12 @@ export default {
         const reviewSignature = lastUserSig || getMessageSignature(lastAssistant)
         let reviewCompleted = false
 
+        const now = Math.floor(Date.now() / 1000)
+        if (!mayInject(injections, `${parentSessionID}|`, now, INJECTION_WINDOW, MAX_REVIEWS)) {
+          debug("Review injection ceiling reached", parentSessionID)
+          return
+        }
+
         for (const reviewModel of reviewModels) {
           let reviewSession: any
           try {
@@ -144,6 +157,7 @@ export default {
               text: buildReviewPrompt(workModelText, formatModelSpec(reviewModel), toolCalls, lastUserText, lastAssistantText),
             })
             reviewedMessageBySession.set(parentSessionID, reviewSignature)
+            injections = recordInjection(injections, `${parentSessionID}|${countInWindow(injections, `${parentSessionID}|`, now, INJECTION_WINDOW)}`, now)
             debug("Created review session", { parentSessionID, reviewSessionID: reviewSession.id, reviewModel: formatModelSpec(reviewModel), toolCalls })
             reviewCompleted = true
             break

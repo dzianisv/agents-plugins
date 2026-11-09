@@ -219,6 +219,19 @@ test("the findings are injected immediately and never re-added to a user message
   expect(real.messages[0].parts).toHaveLength(1)
 })
 
+test("repeated failing audits stop injecting after the per-session ceiling", async () => {
+  const verdict = JSON.stringify({ verdict: "FAIL", violations: [{ rule: "Replies max 6 lines", evidence: "#1", fix: "shorten" }] })
+  const convo = [...conversation]
+  const { client, calls } = fakeClient({ verdict, convo })
+  const hooks: any = await Supervisor({ client } as any)
+  for (let i = 0; i < 5; i++) {
+    convo.push({ info: { id: `a${i}`, role: "assistant", sessionID: "s11" }, parts: [{ type: "text", text: `round ${i}` }] })
+    await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s11" } } })
+    await new Promise((r) => setTimeout(r, 30))
+  }
+  expect(calls.injected).toHaveLength(3)
+})
+
 test("an audit error is never injected", async () => {
   const { client, calls } = fakeClient({ verdict: "looks fine to me" })
   const hooks: any = await Supervisor({ client } as any)

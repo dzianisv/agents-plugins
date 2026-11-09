@@ -8,7 +8,7 @@ import { main as sessionEndMain } from "../src/claude/session-end"
 import { main as stopMain, inlineTimeoutSeconds } from "../src/claude/stop"
 import { ERROR_PREFIX, formatFeedback } from "../src/core/prompt"
 import { auditedPath, lockPath, markAudited, pendingPath, rerunPath, safeSessionId, LOCK_STALE_SECONDS, writePending } from "../src/core/state"
-import { FAIL_REPLY, makeEnv, type TestEnv } from "./helpers"
+import { assistant, FAIL_REPLY, makeEnv, text, user, writeTranscript, type TestEnv } from "./helpers"
 
 let env: TestEnv
 beforeEach(() => {
@@ -66,6 +66,17 @@ describe("stop hook", () => {
     expect(calls[0].options.detached).toBe(true)
     expect(calls[0].options.stdio).toBe("ignore")
     expect(readFileSync(pendingPath("s1"), "utf8")).toContain("turn-check ERROR:")
+  })
+
+  test("stops blocking after the per-session ceiling", () => {
+    const extra = { FAKE_REPLY: FAIL_REPLY }
+    const outs: string[] = []
+    for (let i = 0; i < 5; i++) {
+      writeTranscript(env.transcript, [user("fix it", "u1"), assistant([text("done")], `a${i}`)])
+      outs.push(String(env.runHook("stop.ts", payload(), extra).stdout).trim())
+    }
+    expect(outs.filter((out) => out.includes("block"))).toHaveLength(3)
+    expect(outs[4]).toBe("")
   })
 
   test("the inline wait defaults to 90 seconds", () => {
@@ -255,7 +266,7 @@ describe("hooks file and manifest", () => {
 
   test("the plugin manifest names turn-check", () => {
     const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))
-    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.4"])
+    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.5"])
     expect(manifest.author).toEqual({ name: "Dzianis Vashchuk" })
   })
 })

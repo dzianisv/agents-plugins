@@ -53,22 +53,37 @@ const timeoutFloor: Rule = {
   detail: "a judge or review timeout below 120 seconds starves slow models",
 }
 
-export const RULES: Rule[] = [childFlagScoped, ghTokenFallback, judgeTransientRetry, timeoutFloor]
+/** Rule 5: anything that pushes text into a session must bound it with the shared injection ceiling. */
+const injectionBounded: Rule = {
+  id: "injection-bounded",
+  applies: (text) => /session\.prompt\(|"decision": ?"block"|decision: "block"/.test(text),
+  ok: (text) => /inject-limit|blocksInWindow|mayInject/.test(text),
+  detail: "an injected prompt or stop block must use the shared ceiling (packages/shared/src/inject-limit.ts)",
+}
+
+export const RULES: Rule[] = [childFlagScoped, ghTokenFallback, judgeTransientRetry, timeoutFloor, injectionBounded]
 
 /** Every TypeScript source file of the plugin packages, relative to the repo root. */
 export function pluginSources(root: string): string[] {
   const files: string[] = []
   const packages = join(root, "packages")
   for (const pkg of readdirSync(packages)) {
-    const src = join(packages, pkg, "src")
-    let entries: string[] = []
-    try {
-      if (!statSync(src).isDirectory()) continue
-      entries = readdirSync(src, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".ts"))
-    } catch {
-      continue
+    const dirs = [join(packages, pkg, "src")]
+    for (const dir of dirs) {
+      let entries: string[] = []
+      try {
+        if (!statSync(dir).isDirectory()) continue
+        entries = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".ts"))
+      } catch {
+        continue
+      }
+      for (const name of entries) files.push(join(dir, name))
     }
-    for (const name of entries) files.push(join(src, name))
+    // The v2 entries live at the package root and inject too.
+    const entry = join(packages, pkg, "server.ts")
+    try {
+      if (statSync(entry).isFile()) files.push(entry)
+    } catch {}
   }
   return files
 }

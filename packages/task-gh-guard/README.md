@@ -69,7 +69,9 @@ bin/git-rules-review check --command "gh api graphql -f query='mutation { resolv
 6. **Per-branch ceiling.** A branch may block at most `TASK_GH_GUARD_MAX_BLOCKS` times inside one
    window (default 3), counted across every sha, because a new commit re-arms the per-commit budget and
    an agent that keeps amending would otherwise be blocked on every turn. Past the ceiling the guard
-   sends one desktop notification and stops blocking until the window passes.
+   sends one desktop notification and stops blocking until the window passes. The ceiling is the shared
+   one in `packages/shared/src/inject-limit.ts`; the rules behind it are in AGENTS.md, "Plugin loop
+   safety".
 
 State lives in `~/.agents/state/task-gh-guard/<runtime>-<session_id>.json`.
 

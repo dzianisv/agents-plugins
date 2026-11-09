@@ -1,5 +1,6 @@
 // State files and block-window bookkeeping for task-gh-guard.
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { countInWindow } from "../shared/inject-limit"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -123,16 +124,7 @@ export function maxBlocks(env: NodeJS.ProcessEnv = process.env): number {
 
 /** How many stops this branch already blocked inside the window, across every sha. */
 export function blocksInWindow(path: string, entry: ReportEntry, now: number, window: number): number {
-  if (window <= 0) return 0
-  const seen = readState(path).reported
-  if (!seen || typeof seen !== "object") return 0
-  const prefix = `${repoKey(entry)}|${entry.branch ?? "?"}@`
-  let count = 0
-  for (const [key, value] of Object.entries(seen)) {
-    const at = value?.at
-    if (key.startsWith(prefix) && typeof at === "number" && now - at < window) count++
-  }
-  return count
+  return countInWindow(readState(path).reported ?? {}, `${repoKey(entry)}|${entry.branch ?? "?"}@`, now, window)
 }
 
 /** Marks every given commit as reported at `now`. */

@@ -8,8 +8,15 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { isViolationFeedback } from "../core/prompt"
 import { cliJudge } from "../core/judge-cli"
-import { clearPending, parseHookInput, readPending, safeSessionId, stateDir, type Env } from "../core/state"
+import { clearPending, parseHookInput, readInjectBudget, readPending, safeSessionId, stateDir, writeInjectBudget, type Env } from "../core/state"
+import { countInWindow, mayInject, recordInjection } from "../shared/inject-limit"
+import { notify } from "../shared/notify"
 import { auditSession, modelName, run, settleSeconds, type RunOptions } from "./audit"
+
+/** Notes a session may receive per window, so a judge that keeps finding the same violation cannot loop. */
+const MAX_INJECTIONS = 3
+/** The window the injection ceiling is counted over, in seconds. */
+const INJECTION_WINDOW = 3600
 
 /** How the hook starts the fallback child; injectable so tests can assert the spawn without running it. */
 export type SpawnFn = (
@@ -78,6 +85,14 @@ export async function main(
     spawnAudit(sessionID, transcript, { env, spawn: options.spawn })
     return 0
   }
+  const now = Math.floor(Date.now() / 1000)
+  const budget = readInjectBudget(sessionID, dir)
+  if (!mayInject(budget, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
+    await notify("turn-check", `not blocking again this hour: ${MAX_INJECTIONS} findings already delivered for this session.`)
+    clearPending(sessionID, dir)
+    return 0
+  }
+  writeInjectBudget(sessionID, recordInjection(budget, `${sessionID}|${countInWindow(budget, `${sessionID}|`, now, INJECTION_WINDOW)}`, now), dir)
   clearPending(sessionID, dir)
   process.stdout.write(`${JSON.stringify({ decision: "block", reason: feedback })}\n`)
   return 0

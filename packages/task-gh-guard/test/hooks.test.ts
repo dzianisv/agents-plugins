@@ -448,6 +448,16 @@ describe("stop hook", () => {
     expect(readFileSync(notified, "utf8")).toContain("not blocking again")
   })
 
+  test("ten identical stops block at most the ceiling", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    scenario({ [sha]: checkRuns([{ name: "ci", status: "completed", conclusion: "failure" }]) })
+    pushHook()
+    let blocks = 0
+    for (let i = 0; i < 10; i++) if (String(stop("s1", false, { TASK_GH_GUARD_MAX_BLOCKS: "3" }).stdout).includes("block")) blocks++
+    expect(blocks).toBe(1)
+  })
+
   test("a repo with no report still blocks", () => {
     makeRepo()
     const sha = branch("feature/x")

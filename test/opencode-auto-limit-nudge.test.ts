@@ -58,7 +58,15 @@ describe("auto-limit-resume: classifyFailure", () => {
   })
 
   it("retries free-tier usage limit failures", () => {
-    assert.strictEqual(classifyFailure(freeTierError).retryable, true)
+    const verdict = classifyFailure(freeTierError)
+    assert.strictEqual(verdict.retryable, true)
+    assert.strictEqual(verdict.reason, "free-limit")
+  })
+
+  it("treats a hard quota message as a free-limit style failure", () => {
+    const verdict = classifyFailure({ type: "api.error", message: "You exceeded your current quota, check your plan", response: { status_code: 429 } })
+    assert.strictEqual(verdict.retryable, true)
+    assert.strictEqual(verdict.reason, "free-limit")
   })
 
   it("retries 429 API errors even without a known type", () => {

@@ -2,35 +2,42 @@
  * opencode-auto-limit-resume — OpenCode v2 server plugin.
  *
  * When a session dies because the model hit a usage/rate limit
- * (AI.Error.QuotaExceeded, "usage limit has been reached", HTTP 429), this
- * plugin waits and then re-prompts the session so the interrupted task keeps
- * going instead of dying on the spot.
+ * (provider.quota, provider.rate_limit, provider.free-limit, HTTP 429), this
+ * plugin continues the session instead of leaving it dead:
  *
- * OpenCode emits `session.execution.failed` with
- * `data.error = { type: "provider.quota", message, response }`. When the
- * provider reports a reset time it is inside `response.body` (`resets_at`,
- * `resets_in_seconds`) or the response headers; otherwise we back off
- * exponentially. A run that succeeds, or a message the user types, clears the
- * pending retry.
+ *   free limit  -> switch to the next configured fallback model and resume
+ *   quota/429   -> retry the same model, switch after a couple of failures
+ *
+ * Pending work is persisted, so a plugin reload or a server restart does not
+ * lose the resume. A watchdog re-arms it even if a timer was lost.
  *
  * v2 plugin shape: `{ id, setup(ctx) }`. `ctx.event.subscribe()` returns an
  * async iterable; `ctx.session.prompt({ sessionID, text })` admits a message
- * and resumes the agent loop. `ctx.tui` only exists in the TUI.
+ * and resumes the agent loop; `ctx.session.switchModel({ sessionID, model })`
+ * changes the model used by the next run.
  */
 
-import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "node:fs"
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
 const AUTO_RESUME_PREFIX = "[auto-resume]"
-const CONFIG_PATH = join(homedir(), ".config", "opencode", "auto-limit-resume.json")
-const LEGACY_CONFIG_PATH = join(homedir(), ".config", "opencode", "opencode-auto-limit-nudge.json")
-const LOG_DIR = join(homedir(), ".cache", "opencode-auto-limit-resume")
 
 const RETRYABLE = /usage limit|rate.?limit|quota|too many requests|\b429\b|overloaded|capacity|try again in|resets? in/i
+const FREE_LIMIT =
+  /free usage limit|free limit|free models? (?:work|usage)|exceeded your (?:current )?quota|quota exceeded|out of (?:free )?credits|insufficient_quota/i
 const PERMANENT = /no longer supports free models|update to the latest|invalid api key|unauthorized|authentication|not found|model not found|insufficient permissions/i
 
-export type AutoLimitResumeConfig = {
+type AutoLimitResumeConfig = {
   enabled: boolean
   notify: boolean
   maxAttempts: number
@@ -40,6 +47,11 @@ export type AutoLimitResumeConfig = {
   settleMs: number
   respectProviderReset: boolean
   toastDurationMs: number
+  fallbackModels: string[]
+  switchAfterAttempts: number
+  watchdogMs: number
+  injectWindowMs: number
+  injectPerWindow: number
 }
 
 const DEFAULTS: AutoLimitResumeConfig = {
@@ -49,9 +61,14 @@ const DEFAULTS: AutoLimitResumeConfig = {
   baseDelayMs: 60_000,
   maxDelayMs: 30 * 60_000,
   maxWindowMs: 24 * 3600_000,
-  settleMs: 90_000,
+  settleMs: 10_000,
   respectProviderReset: true,
   toastDurationMs: 6000,
+  fallbackModels: [],
+  switchAfterAttempts: 2,
+  watchdogMs: 15_000,
+  injectWindowMs: 3600_000,
+  injectPerWindow: 8,
 }
 
 function resolveConfig(raw: Partial<AutoLimitResumeConfig> | undefined): AutoLimitResumeConfig {
@@ -59,10 +76,22 @@ function resolveConfig(raw: Partial<AutoLimitResumeConfig> | undefined): AutoLim
   if (!raw || typeof raw !== "object") return config
   for (const key of Object.keys(DEFAULTS) as (keyof AutoLimitResumeConfig)[]) {
     const value = (raw as any)[key]
+    if (key === "fallbackModels") {
+      if (Array.isArray(value)) config.fallbackModels = value.filter((entry) => typeof entry === "string" && entry.includes("/"))
+      continue
+    }
     if (typeof value === typeof DEFAULTS[key]) (config as any)[key] = value
   }
   return config
 }
+
+const cacheDir = () => process.env.OPENCODE_AUTO_LIMIT_RESUME_DIR || join(homedir(), ".cache", "opencode-auto-limit-resume")
+const logFile = () => join(cacheDir(), "events.jsonl")
+const stateFile = () => join(cacheDir(), "state.json")
+const configFile = () =>
+  process.env.OPENCODE_AUTO_LIMIT_RESUME_CONFIG ||
+  join(homedir(), ".config", "opencode", "auto-limit-resume.json")
+const legacyConfigFile = () => join(homedir(), ".config", "opencode", "opencode-auto-limit-nudge.json")
 
 /** Parse a reset time (ms epoch) out of a provider error. */
 function parseResetAt(error: any, now: number = Date.now()): number | undefined {
@@ -101,7 +130,6 @@ function parseResetAt(error: any, now: number = Date.now()): number | undefined 
     candidates.push(now + seconds * 1000)
   }
 
-  // Epoch seconds vs milliseconds: anything below year 33658 is seconds.
   const future = candidates.filter((value) => value > now + 1000)
   if (future.length === 0) return undefined
   return Math.min(...future)
@@ -109,7 +137,7 @@ function parseResetAt(error: any, now: number = Date.now()): number | undefined 
 
 type FailureVerdict = {
   retryable: boolean
-  reason: string
+  reason: "free-limit" | "limit" | "permanent" | "auth" | "not-a-limit"
   message: string
   resetsAt?: number
 }
@@ -125,12 +153,14 @@ function classifyFailure(error: any, now: number = Date.now()): FailureVerdict {
   const retryable =
     type === "provider.quota" ||
     type === "provider.rate_limit" ||
+    type === "provider.free-limit" ||
     status === 429 ||
     status === 529 ||
     RETRYABLE.test(message)
   if (!retryable) return { retryable: false, reason: "not-a-limit", message }
 
-  return { retryable: true, reason: "limit", message, resetsAt: parseResetAt(error, now) }
+  const reason = type === "provider.free-limit" || FREE_LIMIT.test(message) ? "free-limit" : "limit"
+  return { retryable: true, reason, message, resetsAt: parseResetAt(error, now) }
 }
 
 type DelayInput = {
@@ -141,9 +171,9 @@ type DelayInput = {
 }
 
 /**
- * Delay before the next resume attempt. Returns `undefined` when the provider
- * says the limit resets further out than the retry window, so we do not leave
- * a pointless timer running.
+ * Delay before the next retry of the same model. Returns `undefined` when the
+ * provider says the limit resets further out than the retry window, so we do
+ * not leave a pointless timer running.
  */
 function nextDelayMs({ attempt, now, cfg, resetsAt }: DelayInput): number | undefined {
   if (cfg.respectProviderReset && resetsAt) {
@@ -157,7 +187,7 @@ function nextDelayMs({ attempt, now, cfg, resetsAt }: DelayInput): number | unde
 
 function readConfigFile(): Partial<AutoLimitResumeConfig> {
   if (process.env.OPENCODE_AUTO_LIMIT_RESUME_DISABLED === "1") return { enabled: false }
-  for (const path of [CONFIG_PATH, LEGACY_CONFIG_PATH]) {
+  for (const path of [configFile(), legacyConfigFile()]) {
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8"))
       if (parsed && typeof parsed === "object") return parsed
@@ -168,8 +198,8 @@ function readConfigFile(): Partial<AutoLimitResumeConfig> {
 
 function record(entry: Record<string, unknown>) {
   try {
-    mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 })
-    const file = join(LOG_DIR, "events.jsonl")
+    mkdirSync(cacheDir(), { recursive: true, mode: 0o700 })
+    const file = logFile()
     appendFileSync(file, JSON.stringify({ time: new Date().toISOString(), ...entry }) + "\n", { mode: 0o600 })
     chmodSync(file, 0o600)
   } catch {}
@@ -177,24 +207,81 @@ function record(entry: Record<string, unknown>) {
 
 type Model = { providerID?: string; modelID?: string }
 
-type SessionState = {
-  attempts: number
+type Pending = {
+  sessionID: string
   firstAt: number
-  lastDelayMs?: number
-  model?: Model
-  settleTimer?: any
-  resumeTimer?: any
-  lastOutcome?: "running" | "failed" | "ok"
-  lastError?: any
-  verdict?: FailureVerdict
+  failures: number
+  attempts: number
+  nextAt: number
+  lastFailureAt: number
+  failedProviderID?: string
+  failedModelID?: string
+  switchedTo?: string
+  reason: string
+  message: string
+  tried?: string[]
+}
+
+/** One recorded injection, keyed `sessionID|n` (see package rule: injection ceiling). */
+type State = { version: 1; sessions: Record<string, Pending>; injected?: Record<string, { at: number }> }
+
+function readState(): State {
+  try {
+    const parsed = JSON.parse(readFileSync(stateFile(), "utf8"))
+    if (parsed?.version === 1 && parsed.sessions && typeof parsed.sessions === "object") return parsed
+  } catch {}
+  return { version: 1, sessions: {} }
+}
+
+/**
+ * Injections for this session inside the window. Counts every key sharing the
+ * session prefix, so a new attempt key cannot re-arm the ceiling.
+ */
+function injectionsInWindow(state: State, sessionID: string, now: number, windowMs: number): number {
+  if (windowMs <= 0) return 0
+  let count = 0
+  for (const [key, value] of Object.entries(state.injected ?? {})) {
+    if (!key.startsWith(`${sessionID}|`)) continue
+    if (typeof value?.at === "number" && now - value.at < windowMs) count++
+  }
+  return count
+}
+
+function writeState(state: State) {
+  try {
+    mkdirSync(cacheDir(), { recursive: true, mode: 0o700 })
+    const file = stateFile()
+    const tmp = `${file}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
+    renameSync(tmp, file)
+    chmodSync(file, 0o600)
+  } catch {}
+}
+
+const parseModel = (value: string): { providerID: string; id: string } | undefined => {
+  const at = value.indexOf("/")
+  if (at <= 0 || at === value.length - 1) return undefined
+  return { providerID: value.slice(0, at), id: value.slice(at + 1) }
+}
+
+const modelKey = (model?: { providerID?: string; id?: string; modelID?: string }) => {
+  if (!model?.providerID) return undefined
+  const id = model.id ?? model.modelID
+  if (!id) return undefined
+  return `${model.providerID}/${id}`
 }
 
 type Registry = {
   owner?: string
-  sessions: Map<string, SessionState>
+  instances: Set<string>
+  state: State
 }
 
-const registry: Registry = ((globalThis as any).__autoLimitResume ??= { sessions: new Map<string, SessionState>() })
+const registry: Registry = ((globalThis as any).__autoLimitResume ??= {
+  state: { version: 1, sessions: {} },
+  instances: new Set<string>(),
+})
+if (!registry.instances) registry.instances = new Set<string>()
 
 export default {
   id: "opencode-auto-limit-resume",
@@ -204,9 +291,11 @@ export default {
 
     const instance = crypto.randomUUID()
     // opencode can instantiate the same plugin more than once (global + project
-    // config). The most recently loaded instance owns the shared registry, so a
-    // hot reload takes over without a gap.
+    // config). The most recently loaded instance owns the shared registry and
+    // the watchdog; ownership is handed back when it unloads.
+    registry.instances.add(instance)
     registry.owner = instance
+    registry.state = readState()
 
     const toast = (message: string, variant: "info" | "success" | "warning" | "error" = "warning") => {
       if (!cfg.notify) return
@@ -217,178 +306,377 @@ export default {
       } catch {}
     }
 
-    const label = (model?: Model) => {
+    const label = (pending?: Pending, model?: Model) => {
+      if (pending?.switchedTo) return pending.switchedTo
+      if (pending?.failedProviderID && pending?.failedModelID) return `${pending.failedProviderID}/${pending.failedModelID}`
       if (model?.providerID && model?.modelID) return `${model.providerID}/${model.modelID}`
       return model?.modelID ?? "the model"
     }
 
-    const when = (ms: number) =>
-      ms - Date.now() > 20 * 3600_000
-        ? new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
-        : new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-
-    const clear = (sessionID: string) => {
-      const state = registry.sessions.get(sessionID)
-      if (!state) return
-      if (state.settleTimer) clearTimeout(state.settleTimer)
-      if (state.resumeTimer) clearTimeout(state.resumeTimer)
-      registry.sessions.delete(sessionID)
+    const persist = () => {
+      // Keep the injection budget small: drop records older than the longest
+      // window we honour.
+      const cutoff = Date.now() - Math.max(cfg.injectWindowMs, 24 * 3600_000)
+      const injected = registry.state.injected
+      if (injected) {
+        for (const [key, value] of Object.entries(injected)) {
+          if (typeof value?.at !== "number" || value.at < cutoff) delete injected[key]
+        }
+        if (Object.keys(injected).length === 0) delete registry.state.injected
+      }
+      writeState(registry.state)
     }
 
-    const cancelTimers = (state: SessionState) => {
-      if (state.settleTimer) clearTimeout(state.settleTimer)
-      if (state.resumeTimer) clearTimeout(state.resumeTimer)
-      state.settleTimer = undefined
-      state.resumeTimer = undefined
-    }
-
-    const resume = async (sessionID: string) => {
-      const state = registry.sessions.get(sessionID)
-      if (!state) return
-      state.resumeTimer = undefined
-      if (state.lastOutcome !== "failed") return
+    // Cross-process guard: one exclusive lock file per session, so two server
+    // processes cannot both prompt the same session. Stale locks expire so a
+    // crashed process cannot block a resume forever.
+    const lockPath = (sessionID: string) =>
+      join(cacheDir(), `claim-${sessionID.replace(/[^a-zA-Z0-9_-]/g, "")}.lock`)
+    const acquire = (sessionID: string) => {
       try {
-        // Let any in-flight run settle before admitting new input.
-        await Promise.race([
-          Promise.resolve(ctx.session.wait({ sessionID })).catch(() => undefined),
-          new Promise((resolve) => setTimeout(resolve, 60_000)),
-        ])
-        if (registry.sessions.get(sessionID) !== state) return
-        if (state.lastOutcome !== "failed") return
-        const text = `${AUTO_RESUME_PREFIX} The previous run stopped because ${label(state.model)} hit a usage limit. Continue the interrupted task from where it stopped. Check the current state first and do not repeat work that is already done.`
-        await ctx.session.prompt({ sessionID, text, delivery: "queue", metadata: { autoResume: true } })
-        record({ event: "resume", sessionID, attempt: state.attempts, delayMs: state.lastDelayMs })
-        toast(`Resumed ${label(state.model)} (attempt ${state.attempts}/${cfg.maxAttempts}).`, "info")
+        mkdirSync(cacheDir(), { recursive: true, mode: 0o700 })
+        writeFileSync(lockPath(sessionID), String(process.pid), { flag: "wx", mode: 0o600 })
+        return true
       } catch (error: any) {
-        record({ event: "resume-failed", sessionID, attempt: state.attempts, error: String(error?.message ?? error) })
-        if (registry.sessions.get(sessionID) !== state) return
-        state.resumeTimer = setTimeout(() => void resume(sessionID), cfg.baseDelayMs)
-        state.resumeTimer?.unref?.()
+        if (error?.code !== "EEXIST") return true
+        try {
+          if (Date.now() - statSync(lockPath(sessionID)).mtimeMs > 60_000) {
+            unlinkSync(lockPath(sessionID))
+            writeFileSync(lockPath(sessionID), String(process.pid), { flag: "wx", mode: 0o600 })
+            return true
+          }
+        } catch {}
+        return false
+      }
+    }
+    const release = (sessionID: string) => {
+      try {
+        unlinkSync(lockPath(sessionID))
+      } catch {}
+    }
+
+    const drop = (sessionID: string, reason: string, extra: Record<string, unknown> = {}) => {
+      const pending = registry.state.sessions[sessionID]
+      if (!pending) return
+      delete registry.state.sessions[sessionID]
+      persist()
+      record({ event: "clear", sessionID, reason, attempts: pending.attempts, ...extra })
+    }
+
+    const arm = (sessionID: string) => {
+      const pending = registry.state.sessions[sessionID]
+      if (!pending) return
+      if (registry.owner !== instance) return
+      const delay = Math.max(250, pending.nextAt - Date.now())
+      persist()
+      const timer = setTimeout(() => void attempt(sessionID, "timer"), delay)
+      timer?.unref?.()
+      record({ event: "armed", sessionID, at: new Date(pending.nextAt).toISOString(), inMs: delay, attempt: pending.attempts + 1 })
+    }
+
+    const hold = (sessionID: string, retryInMs: number, reason: string, extra: Record<string, unknown> = {}) => {
+      const pending = registry.state.sessions[sessionID]
+      if (!pending) return
+      pending.nextAt = Date.now() + retryInMs
+      persist()
+      record({ event: "hold", sessionID, reason, retryInMs, ...extra })
+      arm(sessionID)
+    }
+
+    const giveUp = (sessionID: string, reason: string, extra: Record<string, unknown> = {}) => {
+      const pending = registry.state.sessions[sessionID]
+      if (!pending) return
+      record({ event: "give-up", sessionID, reason, attempts: pending.attempts, ...extra })
+      toast(`Gave up resuming ${label(pending)}: ${reason}.`, "error")
+      drop(sessionID, reason, extra)
+    }
+
+    const running = (session: any) => {
+      if (!session) return false
+      if (session.outcome) return false
+      if (session.status && session.status !== "idle") return true
+      const busy = Number(session?.time?.busy ?? 0)
+      const idle = Number(session?.time?.idle ?? 0)
+      if (busy > 0 && idle === 0) return true
+      return busy > idle
+    }
+
+    const chooseFallback = (pending: Pending): { providerID: string; id: string } | undefined => {
+      const failed = modelKey({ providerID: pending.failedProviderID, id: pending.failedModelID })
+      const tried = new Set(pending.tried ?? [])
+      return cfg.fallbackModels
+        .map(parseModel)
+        .filter((model): model is { providerID: string; id: string } => !!model)
+        .filter((model) => modelKey(model) !== failed && !tried.has(modelKey(model)!))[0]
+    }
+
+    const backoff = (attempts: number) =>
+      Math.max(1_000, Math.min(cfg.baseDelayMs * 2 ** Math.max(0, attempts - 1), cfg.maxDelayMs))
+
+    const attempt = async (sessionID: string, trigger: "timer" | "watchdog" | "restore") => {
+      if (!sessionID || registry.owner !== instance) return
+      if (inFlight.has(sessionID)) return
+      inFlight.add(sessionID)
+      const claimed = acquire(sessionID)
+      try {
+        if (!claimed) {
+          hold(sessionID, 10_000, "claimed-elsewhere")
+          return
+        }
+        await attemptOnce(sessionID, trigger)
+      } finally {
+        if (claimed) release(sessionID)
+        inFlight.delete(sessionID)
       }
     }
 
-    // opencode retries a failed provider call on its own for ~30s. Arming a
-    // resume during that window fights its retries, so wait for the session to
-    // go quiet first. Any new run pushes the settle check back.
-    const settle = (sessionID: string) => {
-      const state = registry.sessions.get(sessionID)
-      if (!state) return
-      state.settleTimer = undefined
-      if (state.lastOutcome !== "failed") return
-      if (state.resumeTimer) return
-
+    const attemptOnce = async (sessionID: string, trigger: "timer" | "watchdog" | "restore") => {
+      let pending = registry.state.sessions[sessionID]
+      if (!pending) return
       const now = Date.now()
-      if (now - state.firstAt > cfg.maxWindowMs) {
-        record({ event: "give-up", sessionID, reason: "window", attempts: state.attempts })
-        clear(sessionID)
-        return
+      if (pending.nextAt > now + 250) return
+      if (now - pending.firstAt > cfg.maxWindowMs) return giveUp(sessionID, "window")
+      if (pending.attempts >= cfg.maxAttempts) return giveUp(sessionID, "attempts")
+
+      let session: any
+      try {
+        session = await ctx.session.get({ sessionID })
+      } catch (error: any) {
+        return hold(sessionID, 10_000, "session-get-failed", { error: String(error?.message ?? error) })
+      }
+      pending = registry.state.sessions[sessionID]
+      if (!pending) return
+
+      if (!session) return giveUp(sessionID, "session-missing")
+      if (session.outcome === "succeeded") return drop(sessionID, "succeeded")
+      if (session.outcome === "interrupted") return drop(sessionID, "interrupted")
+      if (running(session)) return hold(sessionID, Math.max(250, Math.min(5_000, cfg.watchdogMs)), "busy")
+
+      // Injection ceiling (repo rule): a session that keeps failing must not be
+      // re-prompted forever. Counted per session inside a rolling window.
+      if (injectionsInWindow(registry.state, sessionID, now, cfg.injectWindowMs) >= cfg.injectPerWindow) {
+        record({ event: "give-up", sessionID, reason: "injection-ceiling", windowMs: cfg.injectWindowMs, limit: cfg.injectPerWindow })
+        toast(`Already resumed this session ${cfg.injectPerWindow} times in the last ${Math.round(cfg.injectWindowMs / 60_000)} min; stopping automatic resumes.`, "error")
+        return drop(sessionID, "injection-ceiling")
       }
 
-      const verdict = state.verdict ?? classifyFailure(state.lastError)
-      state.attempts += 1
-
-      if (state.attempts > cfg.maxAttempts) {
-        record({ event: "give-up", sessionID, attempts: state.attempts - 1, message: verdict.message })
-        toast(`Gave up resuming ${label(state.model)} after ${state.attempts - 1} attempts: ${verdict.message}`, "error")
-        clear(sessionID)
-        return
+      // The session tells us which model is actually configured now. That is
+      // the model that failed, so exclude it from failover.
+      const current = modelKey(session.model)
+      if (current) {
+        const [providerID, id] = current.split("/")
+        pending.failedProviderID = providerID
+        pending.failedModelID = id
+        if (pending.switchedTo === current) pending.switchedTo = undefined
       }
 
-      const delay = nextDelayMs({ attempt: state.attempts, resetsAt: verdict.resetsAt, now, cfg })
-      if (delay === undefined) {
-        record({ event: "give-up", sessionID, reason: "reset-too-far", resetsAt: verdict.resetsAt, message: verdict.message })
-        toast(`${label(state.model)} limit resets ${new Date(verdict.resetsAt!).toLocaleString()}; not scheduling an automatic resume.`, "error")
-        clear(sessionID)
-        return
-      }
+      const shouldSwitch =
+        !!chooseFallback(pending) &&
+        (pending.reason === "free-limit" || pending.failures >= cfg.switchAfterAttempts)
+      const target = shouldSwitch ? chooseFallback(pending) : undefined
 
-      state.lastDelayMs = delay
-      state.resumeTimer = setTimeout(() => void resume(sessionID), delay)
-      state.resumeTimer?.unref?.()
-      record({ event: "armed", sessionID, attempt: state.attempts, delayMs: delay, resetsAt: verdict.resetsAt, message: verdict.message })
-      toast(
-        `${label(state.model)} hit a limit: ${verdict.message}. Resuming at ${when(now + delay)} (attempt ${state.attempts}/${cfg.maxAttempts}).`,
-        "warning",
-      )
+      try {
+        if (target) {
+          const from = modelKey({ providerID: pending.failedProviderID, id: pending.failedModelID })
+          await ctx.session.switchModel({ sessionID, model: { id: target.id, providerID: target.providerID } })
+          pending = registry.state.sessions[sessionID]
+          if (!pending) return
+          const to = modelKey(target)
+          if (!to) return
+          pending.switchedTo = to
+          pending.tried = [...(pending.tried ?? []), to]
+          record({ event: "switch", sessionID, from, to, trigger })
+          persist()
+          toast(`Switched ${from ?? "model"} to ${pending.switchedTo} and resuming.`, "info")
+        }
+
+        const text = `${AUTO_RESUME_PREFIX} The previous run stopped because ${label(pending)} hit a usage limit. Continue the interrupted task from where it stopped. Check the current state first and do not repeat work that is already done.`
+        await ctx.session.prompt({ sessionID, text, delivery: "queue", metadata: { autoResume: true } })
+        pending = registry.state.sessions[sessionID]
+        if (!pending) return
+        pending.attempts += 1
+        pending.nextAt = Date.now() + backoff(pending.attempts)
+        registry.state.injected = {
+          ...(registry.state.injected ?? {}),
+          [`${sessionID}|${pending.attempts}`]: { at: Date.now() },
+        }
+        record({
+          event: "prompt",
+          sessionID,
+          model: label(pending),
+          attempt: pending.attempts,
+          trigger,
+          switched: !!target,
+        })
+        persist()
+        arm(sessionID)
+      } catch (error: any) {
+        pending = registry.state.sessions[sessionID]
+        if (!pending) return
+        pending.attempts += 1
+        const delay = backoff(pending.attempts)
+        pending.nextAt = Date.now() + delay
+        record({
+          event: "prompt-failed",
+          sessionID,
+          attempt: pending.attempts,
+          error: String(error?.message ?? error).slice(0, 400),
+        })
+        persist()
+        arm(sessionID)
+      }
     }
 
     const onFailure = (sessionID: string, error: any) => {
+      if (!sessionID) return
       // Re-read the config so tuning does not require a server restart.
       cfg = resolveConfig(readConfigFile())
       if (!cfg.enabled) {
-        for (const id of [...registry.sessions.keys()]) clear(id)
+        for (const id of Object.keys(registry.state.sessions)) drop(id, "disabled")
         return
       }
       const verdict = classifyFailure(error)
-      const existing = registry.sessions.get(sessionID)
       if (!verdict.retryable) {
         record({ event: "skip", sessionID, reason: verdict.reason, message: verdict.message })
-        if (existing) clear(sessionID)
+        drop(sessionID, verdict.reason)
         return
       }
 
       const now = Date.now()
-      let state = existing
-      if (!state || now - state.firstAt > cfg.maxWindowMs) {
-        state = { attempts: 0, firstAt: now }
-        registry.sessions.set(sessionID, state)
+      let pending = registry.state.sessions[sessionID]
+      if (!pending || now - pending.firstAt > cfg.maxWindowMs) {
+        pending = {
+          sessionID,
+          firstAt: now,
+          failures: 0,
+          attempts: 0,
+          nextAt: now,
+          lastFailureAt: now,
+          reason: verdict.reason,
+          message: verdict.message,
+        }
+        registry.state.sessions[sessionID] = pending
       }
-      if (state.resumeTimer) clearTimeout(state.resumeTimer)
-      if (state.settleTimer) clearTimeout(state.settleTimer)
-      state.resumeTimer = undefined
-      state.lastOutcome = "failed"
-      state.lastError = error
-      state.verdict = verdict
-      state.settleTimer = setTimeout(() => settle(sessionID), cfg.settleMs)
-      state.settleTimer?.unref?.()
-      record({ event: "failure", sessionID, message: verdict.message, settleMs: cfg.settleMs })
+      pending.failures += 1
+      pending.lastFailureAt = now
+      pending.reason = verdict.reason
+      pending.message = verdict.message
+
+      // If the run that just failed was our failover target, that target is
+      // now the failed model; pick a different one next time.
+      if (pending.switchedTo) {
+        const [providerID, id] = pending.switchedTo.split("/")
+        pending.failedProviderID = providerID
+        pending.failedModelID = id
+        pending.switchedTo = undefined
+      }
+
+      const canSwitch = !!chooseFallback(pending) && (verdict.reason === "free-limit" || pending.failures >= cfg.switchAfterAttempts)
+      const computed = nextDelayMs({ attempt: pending.failures, resetsAt: verdict.resetsAt, now, cfg })
+      if (!canSwitch && computed === undefined) {
+        record({ event: "give-up", sessionID, reason: "reset-too-far", resetsAt: verdict.resetsAt, message: verdict.message })
+        toast(`${label(pending)} limit resets ${new Date(verdict.resetsAt!).toLocaleString()}; not scheduling an automatic resume.`, "error")
+        drop(sessionID, "reset-too-far")
+        return
+      }
+      const delay = canSwitch ? cfg.settleMs : computed ?? cfg.maxDelayMs
+
+      pending.nextAt = now + Math.max(250, delay)
+      persist()
+      record({
+        event: "failure",
+        sessionID,
+        failures: pending.failures,
+        reason: verdict.reason,
+        message: verdict.message,
+        model: modelKey({ providerID: pending.failedProviderID, id: pending.failedModelID }),
+        nextAt: new Date(pending.nextAt).toISOString(),
+        action: canSwitch ? "switch-model" : "retry-same-model",
+        fallback: modelKey(chooseFallback(pending)),
+      })
+      arm(sessionID)
     }
 
     const controller = new AbortController()
+    const inFlight = new Set<string>()
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          // Only the newest loaded instance drives the shared registry.
           if (registry.owner !== instance) continue
           const type = event?.type
           const data = event?.data
           if (typeof type !== "string" || !data) continue
 
-          if (type === "session.step.started" && data.model) {
-            const state = registry.sessions.get(data.sessionID)
-            if (state) state.model = { providerID: data.model.providerID, modelID: data.model.id ?? data.model.modelID }
-            continue
-          }
-
-          // A run started again (opencode's own retry, our prompt, or the
-          // user's): cancel pending timers and wait for the outcome.
           if (type === "session.execution.started") {
-            const state = registry.sessions.get(data.sessionID)
-            if (state) {
-              cancelTimers(state)
-              state.lastOutcome = "running"
-            }
+            // Never cancel here: opencode itself emits started for its own
+            // retries, and a started run can end without a terminal event
+            // (revert, abort). Cancelling on it is how resumes were lost.
+            const pending = registry.state.sessions[sessionIDOf(data)]
+            if (!pending) continue
+            record({ event: "activity", sessionID: pending.sessionID, nextAt: new Date(pending.nextAt).toISOString() })
             continue
           }
 
           if (type === "session.execution.succeeded") {
-            clear(data.sessionID)
+            const sessionID = sessionIDOf(data)
+            const pending = registry.state.sessions[sessionID]
+            if (!pending) continue
+            toast(`Resumed ${label(pending)}: the task completed.`, "success")
+            drop(sessionID, "succeeded", { attempts: pending.attempts })
             continue
           }
 
           if (type === "session.execution.failed") {
-            onFailure(data.sessionID, data.error)
+            onFailure(sessionIDOf(data), data.error)
             continue
           }
         }
       } catch {}
     })()
 
+    // Restore pending resumes from disk: a plugin reload, a location restart,
+    // or a lost timer must not lose the work.
+    let restored = 0
+    const now = Date.now()
+    for (const [sessionID, pending] of Object.entries(registry.state.sessions)) {
+      if (now - pending.firstAt > cfg.maxWindowMs || pending.attempts >= cfg.maxAttempts) {
+        delete registry.state.sessions[sessionID]
+        continue
+      }
+      restored += 1
+      if (pending.nextAt <= now) pending.nextAt = now + 1_000
+      record({ event: "restored", sessionID, attempts: pending.attempts, nextAt: new Date(pending.nextAt).toISOString() })
+      arm(sessionID)
+    }
+    if (restored > 0) persist()
+    record({ event: "setup", instance, restored, sessions: Object.keys(registry.state.sessions).length })
+
+    const watchdog = setInterval(() => {
+      if (registry.owner !== instance) return
+      const at = Date.now()
+      for (const pending of Object.values(registry.state.sessions)) {
+        if (pending.nextAt <= at) void attempt(pending.sessionID, "watchdog")
+      }
+    }, Math.max(1_000, cfg.watchdogMs))
+    watchdog?.unref?.()
+
     return () => {
       controller.abort()
-      if (registry.owner !== instance) return
-      registry.owner = undefined
-      for (const sessionID of [...registry.sessions.keys()]) clear(sessionID)
+      clearInterval(watchdog)
+      registry.instances.delete(instance)
+      const wasOwner = registry.owner === instance
+      if (!wasOwner) {
+        record({ event: "dispose", instance, owner: false })
+        return
+      }
+      // Hand ownership to a surviving instance instead of going headless.
+      const next = registry.instances.values().next().value
+      registry.owner = next
+      record({ event: "dispose", instance, owner: true, handedTo: next })
     }
   },
+}
+
+function sessionIDOf(data: any): string {
+  return String(data?.sessionID ?? data?.sessionId ?? "")
 }

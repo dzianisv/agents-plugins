@@ -274,6 +274,42 @@ describe("auto-limit-resume: state machine", () => {
     dispose2?.()
   })
 
+  it("stops injecting after the rolling injection ceiling", async () => {
+    // Repo rule: a plugin that pushes text into a session must bound it, and a
+    // changing key must not re-arm the budget.
+    const harness = await boot({
+      ...fast,
+      maxAttempts: 100,
+      settleMs: 10,
+      baseDelayMs: 10,
+      maxDelayMs: 20,
+      fallbackModels: [],
+      injectPerWindow: 3,
+      injectWindowMs: 60_000,
+    })
+    harness.host.session("ses_k")
+
+    for (let i = 0; i < 8; i++) {
+      const before = records(harness.dir).filter((r) => r.event === "prompt").length
+      harness.host.session("ses_k", { outcome: "failed" })
+      harness.host.fail("ses_k", { type: "provider.rate_limit", message: "Too Many Requests", response: { status_code: 429 } })
+      await waitFor(() => {
+        const rows = records(harness.dir)
+        return (
+          rows.filter((r) => r.event === "prompt").length > before ||
+          rows.some((r) => r.event === "give-up" && r.reason === "injection-ceiling")
+        )
+      }, 5_000)
+      if (records(harness.dir).some((r) => r.event === "give-up" && r.reason === "injection-ceiling")) break
+    }
+
+    const injected = records(harness.dir).filter((r) => r.event === "prompt").length
+    assert.ok(injected <= 3, `injected ${injected} times, ceiling is 3`)
+    assert.ok(records(harness.dir).some((r) => r.event === "give-up" && r.reason === "injection-ceiling"))
+
+    harness.dispose()
+  }, 30_000)
+
   it("gives up after maxAttempts", async () => {
     const harness = await boot({ ...fast, maxAttempts: 2, fallbackModels: [] })
     harness.host.session("ses_f")

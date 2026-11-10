@@ -50,6 +50,8 @@ type AutoLimitResumeConfig = {
   fallbackModels: string[]
   switchAfterAttempts: number
   watchdogMs: number
+  injectWindowMs: number
+  injectPerWindow: number
 }
 
 const DEFAULTS: AutoLimitResumeConfig = {
@@ -65,6 +67,8 @@ const DEFAULTS: AutoLimitResumeConfig = {
   fallbackModels: [],
   switchAfterAttempts: 2,
   watchdogMs: 15_000,
+  injectWindowMs: 3600_000,
+  injectPerWindow: 8,
 }
 
 function resolveConfig(raw: Partial<AutoLimitResumeConfig> | undefined): AutoLimitResumeConfig {
@@ -218,7 +222,8 @@ type Pending = {
   tried?: string[]
 }
 
-type State = { version: 1; sessions: Record<string, Pending> }
+/** One recorded injection, keyed `sessionID|n` (see package rule: injection ceiling). */
+type State = { version: 1; sessions: Record<string, Pending>; injected?: Record<string, { at: number }> }
 
 function readState(): State {
   try {
@@ -226,6 +231,20 @@ function readState(): State {
     if (parsed?.version === 1 && parsed.sessions && typeof parsed.sessions === "object") return parsed
   } catch {}
   return { version: 1, sessions: {} }
+}
+
+/**
+ * Injections for this session inside the window. Counts every key sharing the
+ * session prefix, so a new attempt key cannot re-arm the ceiling.
+ */
+function injectionsInWindow(state: State, sessionID: string, now: number, windowMs: number): number {
+  if (windowMs <= 0) return 0
+  let count = 0
+  for (const [key, value] of Object.entries(state.injected ?? {})) {
+    if (!key.startsWith(`${sessionID}|`)) continue
+    if (typeof value?.at === "number" && now - value.at < windowMs) count++
+  }
+  return count
 }
 
 function writeState(state: State) {
@@ -294,7 +313,19 @@ export default {
       return model?.modelID ?? "the model"
     }
 
-    const persist = () => writeState(registry.state)
+    const persist = () => {
+      // Keep the injection budget small: drop records older than the longest
+      // window we honour.
+      const cutoff = Date.now() - Math.max(cfg.injectWindowMs, 24 * 3600_000)
+      const injected = registry.state.injected
+      if (injected) {
+        for (const [key, value] of Object.entries(injected)) {
+          if (typeof value?.at !== "number" || value.at < cutoff) delete injected[key]
+        }
+        if (Object.keys(injected).length === 0) delete registry.state.injected
+      }
+      writeState(registry.state)
+    }
 
     // Cross-process guard: one exclusive lock file per session, so two server
     // processes cannot both prompt the same session. Stale locks expire so a
@@ -421,6 +452,14 @@ export default {
       if (session.outcome === "interrupted") return drop(sessionID, "interrupted")
       if (running(session)) return hold(sessionID, Math.max(250, Math.min(5_000, cfg.watchdogMs)), "busy")
 
+      // Injection ceiling (repo rule): a session that keeps failing must not be
+      // re-prompted forever. Counted per session inside a rolling window.
+      if (injectionsInWindow(registry.state, sessionID, now, cfg.injectWindowMs) >= cfg.injectPerWindow) {
+        record({ event: "give-up", sessionID, reason: "injection-ceiling", windowMs: cfg.injectWindowMs, limit: cfg.injectPerWindow })
+        toast(`Already resumed this session ${cfg.injectPerWindow} times in the last ${Math.round(cfg.injectWindowMs / 60_000)} min; stopping automatic resumes.`, "error")
+        return drop(sessionID, "injection-ceiling")
+      }
+
       // The session tells us which model is actually configured now. That is
       // the model that failed, so exclude it from failover.
       const current = modelKey(session.model)
@@ -457,6 +496,10 @@ export default {
         if (!pending) return
         pending.attempts += 1
         pending.nextAt = Date.now() + backoff(pending.attempts)
+        registry.state.injected = {
+          ...(registry.state.injected ?? {}),
+          [`${sessionID}|${pending.attempts}`]: { at: Date.now() },
+        }
         record({
           event: "prompt",
           sessionID,

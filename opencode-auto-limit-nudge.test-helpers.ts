@@ -28,6 +28,8 @@ export type AutoLimitResumeConfig = {
   fallbackModels: string[]
   switchAfterAttempts: number
   watchdogMs: number
+  injectWindowMs: number
+  injectPerWindow: number
 }
 
 export const DEFAULTS: AutoLimitResumeConfig = {
@@ -43,6 +45,8 @@ export const DEFAULTS: AutoLimitResumeConfig = {
   fallbackModels: [],
   switchAfterAttempts: 2,
   watchdogMs: 15_000,
+  injectWindowMs: 3600_000,
+  injectPerWindow: 8,
 }
 
 export function resolveConfig(raw: Partial<AutoLimitResumeConfig> | undefined): AutoLimitResumeConfig {

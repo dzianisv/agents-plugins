@@ -105,13 +105,21 @@ failure; the legacy `opencode-auto-limit-nudge.json` is still read as fallback):
   "toastDurationMs": 6000,
   "fallbackModels": ["opencode-go/deepseek-v4.1-flash"],
   "switchAfterAttempts": 2,
-  "watchdogMs": 15000
+  "watchdogMs": 15000,
+  "injectWindowMs": 3600000,
+  "injectPerWindow": 8
 }
 ```
 
 - `fallbackModels` — `providerID/modelID` strings, tried in order. The model
-  that just failed is skipped. Empty means retry the same model only.
+  that just failed is skipped, and a fallback that already failed is not retried
+  while another candidate exists.
 - `switchAfterAttempts` — after how many non-free-limit failures to switch.
+- `injectWindowMs` / `injectPerWindow` — injection ceiling (repo plugin
+  loop-safety rule). At most `injectPerWindow` continuation prompts per session
+  inside `injectWindowMs`; past that the plugin toasts once and stops. The
+  budget is keyed by session and counts every attempt key, so a new attempt
+  cannot re-arm it.
 - Kill switch: `OPENCODE_AUTO_LIMIT_RESUME_DISABLED=1`.
 - Test overrides: `OPENCODE_AUTO_LIMIT_RESUME_DIR` (state/log directory) and
   `OPENCODE_AUTO_LIMIT_RESUME_CONFIG` (config path).
@@ -135,10 +143,11 @@ doubling to 30 min, and switches model after two failures.
 | `prompt` | continuation prompt admitted |
 | `prompt-failed` | prompt/switch failed; retrying with backoff |
 | `clear` | pending work removed, with reason (`succeeded`, `interrupted`, `attempts`, ...) |
-| `give-up` | stopped, with reason (`attempts`, `window`, `reset-too-far`) |
+| `give-up` | stopped, with reason (`attempts`, `window`, `reset-too-far`, `injection-ceiling`) |
 | `dispose` | plugin instance unloaded; pending state stays on disk |
 
-`~/.cache/opencode-auto-limit-resume/state.json` holds the pending resumes.
+`~/.cache/opencode-auto-limit-resume/state.json` holds the pending resumes and
+the injection budget.
 
 ## Files
 

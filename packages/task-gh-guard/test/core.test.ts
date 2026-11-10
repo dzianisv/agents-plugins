@@ -13,16 +13,12 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { dropSuperseded } from "../src/core/gate"
-import { bumpNudge, nudgeAllowed, nudgeKey, nudgeText, stopReason, type Nudges } from "../src/core/feedback"
+import { nudgeText, stopReason } from "../src/core/feedback"
 import { classify, isPushCommand, pushBranches, pushHits, splitSegments } from "../src/core/push"
 import {
-  blockWindow,
-  blocksInWindow,
   markReported,
-  maxBlocks,
   readState,
   reported,
-  writeBudget,
   safeSessionID,
   statePath,
   writeState,
@@ -41,18 +37,6 @@ import {
 
 const packageDir = join(import.meta.dir, "..")
 const fakeOpencode = join(packageDir, "test", "fixtures", "fake-opencode")
-
-const entry = (sha: string, status: "pass" | "pending" | "fail" = "pending") => ({
-  repo: "",
-  owner: "",
-  name: "",
-  branch: "b",
-  sha,
-  pushed_at: null,
-  status,
-  checks: [],
-  error: null,
-})
 
 describe("isPushCommand", () => {
   test.each([
@@ -185,47 +169,6 @@ describe("dropSuperseded", () => {
   })
 })
 
-describe("block ceiling", () => {
-  test("maxBlocks defaults to 3 and reads the env", () => {
-    expect(maxBlocks({})).toBe(3)
-    expect(maxBlocks({ TASK_GH_GUARD_MAX_BLOCKS: "1" })).toBe(1)
-    expect(maxBlocks({ TASK_GH_GUARD_MAX_BLOCKS: "0" })).toBe(0)
-    expect(maxBlocks({ TASK_GH_GUARD_MAX_BLOCKS: "x" })).toBe(3)
-  })
-
-  test("blocksInWindow counts this branch across every sha, inside the window only", () => {
-    const dir = mkdtempSync(join(tmpdir(), "tgg-ceiling-"))
-    const path = join(dir, "state.json")
-    writeBudget(path, {
-      "/r|b@aaa": { at: 100 },
-      "/r|b@bbb": { at: 200 },
-      "/r|other@ccc": { at: 300 },
-      "/r|b@ddd": { at: 10 },
-    })
-    expect(blocksInWindow(path, { repo: "/r", branch: "b" }, 250, 3600)).toBe(3)
-    expect(blocksInWindow(path, { repo: "/r", branch: "b" }, 4000, 3600)).toBe(0)
-    expect(blocksInWindow(path, { repo: "/r", branch: "b" }, 250, 0)).toBe(0)
-    expect(blocksInWindow(path, { repo: "/r", branch: "other" }, 250, 3600)).toBe(1)
-    expect(blocksInWindow(path, { repo: "/elsewhere", branch: "b" }, 250, 3600)).toBe(0)
-    rmSync(dir, { recursive: true, force: true })
-  })
-})
-
-describe("blockWindow", () => {
-  test.each([
-    [undefined, 3600],
-    ["0", 0],
-    ["-5", 0],
-    [" 900 ", 900],
-    ["+30", 30],
-    ["12.5", 3600],
-    ["abc", 3600],
-    ["", 3600],
-  ])("%p seconds", (raw, expected) => {
-    expect(blockWindow(raw === undefined ? {} : { TASK_GH_GUARD_BLOCK_WINDOW: raw })).toBe(expected)
-  })
-})
-
 describe("state files", () => {
   let dir: string
 
@@ -267,52 +210,20 @@ describe("state files", () => {
     expect(readState(path)).toEqual({ version: 1, entries: [] })
   })
 
-  test("reported is true only when every entry is inside the window", () => {
+  test("reported is true only when every entry has been delivered for", () => {
     const path = join(dir, "state.json")
     const entries: StateEntry[] = [
       { repo: "/r", branch: "b", sha: "abcdef123" },
       { repo: "/r", branch: "b", sha: "123456789" },
     ]
-    writeState(path, { version: 1, entries })
-    expect(reported(path, entries, 1000, 3600)).toBe(false)
+    expect(reported(path, entries)).toBe(false)
     markReported(path, entries, 1000)
-    expect(reported(path, entries, 2000, 3600)).toBe(true)
-    expect(reported(path, entries, 5000, 3600)).toBe(false)
-    expect(reported(path, entries, 2000, 0)).toBe(false)
-    expect(reported(path, [], 2000, 3600)).toBe(false)
-  })
-})
-
-describe("nudges", () => {
-  test("pending nudges once per SHA set", () => {
-    const nudges: Nudges = {}
-    const key = nudgeKey([entry("a")])
-    expect(nudgeAllowed("pending", key, nudges)).toBe(true)
-    bumpNudge("pending", key, nudges)
-    expect(nudgeAllowed("pending", key, nudges)).toBe(false)
-  })
-
-  test("fail nudges three times per SHA set, then stops", () => {
-    const nudges: Nudges = {}
-    const key = nudgeKey([entry("a")])
-    for (let index = 0; index < 3; index++) {
-      expect(nudgeAllowed("fail", key, nudges)).toBe(true)
-      bumpNudge("fail", key, nudges)
-    }
-    expect(nudgeAllowed("fail", key, nudges)).toBe(false)
-  })
-
-  test("a new SHA set resets both counters", () => {
-    const nudges: Nudges = {}
-    bumpNudge("pending", nudgeKey([entry("a")]), nudges)
-    bumpNudge("fail", nudgeKey([entry("a")]), nudges)
-    expect(nudgeAllowed("pending", nudgeKey([entry("b")]), nudges)).toBe(true)
-    expect(nudgeAllowed("fail", nudgeKey([entry("b")]), nudges)).toBe(true)
-  })
-
-  test("nudgeKey ignores passing entries and sorts", () => {
-    expect(nudgeKey([entry("b"), entry("a", "pass"), entry("c")])).toBe("b@b,b@c")
-    expect(nudgeKey([entry("a", "pass")])).toBe("")
+    expect(reported(path, entries)).toBe(true)
+    // No window: an old delivery still counts, so the same commit never fires again.
+    expect(reported(path, entries)).toBe(true)
+    expect(reported(path, [entries[0]])).toBe(true)
+    expect(reported(path, [...entries, { repo: "/r", branch: "b", sha: "newsha1" }])).toBe(false)
+    expect(reported(path, [])).toBe(false)
   })
 })
 

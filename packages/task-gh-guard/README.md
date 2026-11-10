@@ -60,18 +60,13 @@ bin/git-rules-review check --command "gh api graphql -f query='mutation { resolv
    commit from someone else on the branch does not change the verdict. A recorded commit the branch no
    longer contains (amended, re-signed, force-pushed) is dropped without a CI lookup.
 4. **Clear when proven.** When every recorded SHA passes, delete the state file.
-5. **Bounded blocking.** A failing or pending check blocks the stop with every failing check, its URL
-   and the PR number, at most once per turn (`stop_hook_active`) and once per pushed commit per hour
-   (`TASK_GH_GUARD_BLOCK_WINDOW`, default 3600 seconds), so a new commit still blocks while the same
-   commit cannot loop. Pending says "CI pending on `<branch>@<sha7>`". State survives so a later turn
-   checks again. opencode nudges at most once for pending and three times for a failure per SHA set.
-   Every nudge and every stop block starts with `[task-gh-guard]`, so the source is obvious.
-6. **Per-branch ceiling.** A branch may block at most `TASK_GH_GUARD_MAX_BLOCKS` times inside one
-   window (default 3), counted across every sha, because a new commit re-arms the per-commit budget and
-   an agent that keeps amending would otherwise be blocked on every turn. Past the ceiling the guard
-   sends one desktop notification and stops blocking until the window passes. The ceiling is the shared
-   one in `packages/shared/src/inject-limit.ts`; the rules behind it are in AGENTS.md, "Plugin loop
-   safety".
+5. **One delivery per commit.** A failing or pending check blocks the stop with every failing check,
+   its URL and the PR number, exactly once per pushed commit, ever (`stop_hook_active` also stops a
+   repeat in the same turn). The commit is recorded in `budget/`, beside the state file, so a passing
+   gate that deletes the state cannot re-arm it; a later stop on the same commit only notifies. A
+   genuinely new commit blocks once more. Pending says "CI pending on `<branch>@<sha7>`". opencode and
+   the v2 server nudge the same way. Every nudge and every stop block starts with `[task-gh-guard]`, so
+   the source is obvious. The rules behind this are in AGENTS.md, "Plugin loop safety".
 
 State lives in `~/.agents/state/task-gh-guard/<runtime>-<session_id>.json`.
 

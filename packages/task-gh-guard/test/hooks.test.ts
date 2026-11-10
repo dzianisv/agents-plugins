@@ -345,7 +345,7 @@ describe("stop hook", () => {
     expect(existsSync(statePath())).toBe(true)
   })
 
-  test("pending blocks once per commit inside the window", () => {
+  test("pending blocks once per commit", () => {
     makeRepo()
     const sha = branch("feature/x")
     pushHook()
@@ -355,13 +355,13 @@ describe("stop hook", () => {
     expect(existsSync(statePath())).toBe(true)
   })
 
-  test("pending blocks again once the window is zero", () => {
+  test("pending never blocks twice for the same commit", () => {
     makeRepo()
     const sha = branch("feature/x")
     pushHook()
     scenario({ [sha]: checkRuns([{ name: "build-and-test", status: "in_progress", conclusion: null }]) })
-    expect(blocked(stop("s1", false, { TASK_GH_GUARD_BLOCK_WINDOW: "0" })).decision).toBe("block")
-    expect(blocked(stop("s1", false, { TASK_GH_GUARD_BLOCK_WINDOW: "0" })).decision).toBe("block")
+    expect(blocked(stop()).decision).toBe("block")
+    expect(String(stop().stdout).trim()).toBe("")
   })
 
   test("a failure blocks once per turn", () => {
@@ -380,7 +380,7 @@ describe("stop hook", () => {
     expect(existsSync(statePath())).toBe(true)
   })
 
-  test("a failure blocks once per commit inside the window", () => {
+  test("a failure blocks once per commit", () => {
     makeRepo()
     const sha = branch("feature/x")
     pushHook()
@@ -409,13 +409,13 @@ describe("stop hook", () => {
     expect(String(result.stdout)).toContain(`feature/x@${newer.slice(0, 7)}`)
   })
 
-  test("a failure blocks again once the window is zero", () => {
+  test("a failure never blocks twice for the same commit", () => {
     makeRepo()
     const sha = branch("feature/x")
     pushHook()
     scenario({ [sha]: checkRuns([{ name: "build-and-test", status: "completed", conclusion: "failure" }]) })
-    expect(blocked(stop("s1", false, { TASK_GH_GUARD_BLOCK_WINDOW: "0" })).decision).toBe("block")
-    expect(blocked(stop("s1", false, { TASK_GH_GUARD_BLOCK_WINDOW: "0" })).decision).toBe("block")
+    expect(blocked(stop()).decision).toBe("block")
+    expect(String(stop().stdout).trim()).toBe("")
   })
 
   test("a stale GH_TOKEN is retried with gh's own auth", () => {
@@ -428,33 +428,29 @@ describe("stop hook", () => {
     expect(existsSync(statePath("s1"))).toBe(false)
   })
 
-  test("a new commit on the same branch does not re-arm past the ceiling", () => {
+  test("a new commit blocks again while the same commit does not", () => {
     makeRepo()
     const first = branch("feature/x")
     scenario({ [first]: checkRuns([{ name: "ci", status: "completed", conclusion: "failure" }]) })
     pushHook()
-    const notified = join(tmp, "ceiling.txt")
-    const recorder = join(tmp, "ceiling.sh")
-    writeFileSync(recorder, `#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> "${notified}"\n`)
-    chmodSync(recorder, 0o755)
-    const extra = { TASK_GH_GUARD_MAX_BLOCKS: "1", AGENTS_NOTIFY_CMD: recorder }
-    expect(blocked(stop("s1", false, extra)).decision).toBe("block")
+    expect(blocked(stop()).decision).toBe("block")
+    expect(String(stop().stdout).trim()).toBe("")
 
     const second = commit("feature/x")
     scenario({ [second]: checkRuns([{ name: "ci", status: "completed", conclusion: "failure" }]) })
     pushHook()
-    const third = stop("s1", false, extra)
-    expect(String(third.stdout).trim()).toBe("")
-    expect(readFileSync(notified, "utf8")).toContain("not blocking again")
+    const result = stop()
+    expect(blocked(result).decision).toBe("block")
+    expect(String(result.stdout)).toContain(`feature/x@${second.slice(0, 7)}`)
   })
 
-  test("ten identical stops block at most the ceiling", () => {
+  test("ten identical stops block once", () => {
     makeRepo()
     const sha = branch("feature/x")
     scenario({ [sha]: checkRuns([{ name: "ci", status: "completed", conclusion: "failure" }]) })
     pushHook()
     let blocks = 0
-    for (let i = 0; i < 10; i++) if (String(stop("s1", false, { TASK_GH_GUARD_MAX_BLOCKS: "3" }).stdout).includes("block")) blocks++
+    for (let i = 0; i < 10; i++) if (String(stop().stdout).includes("block")) blocks++
     expect(blocks).toBe(1)
   })
 

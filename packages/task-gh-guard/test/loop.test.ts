@@ -1,5 +1,6 @@
-// Loop probe: run many turns of a failing CI with the real hooks interleaved the way the host runs
-// them (record after each push, stop at the end of each turn) and assert the injections stay bounded.
+// Loop probe: the loop was the same commit being delivered for on every turn. These probes drive the
+// real hooks the way the host runs them and assert one delivery per commit, however many stops, even
+// when the state file is deleted between turns or the plugin is reloaded.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
@@ -12,7 +13,6 @@ const fakeGh = join(packageDir, "test", "fixtures", "fake-gh")
 const fakeOpencode = join(packageDir, "test", "fixtures", "fake-opencode")
 const bun = process.execPath
 const SLUG = "acme/widgets"
-const CEILING = 3
 
 let tmp: string
 let repo: string
@@ -57,24 +57,25 @@ const commit = (name: string): string => {
   return git(repo, "rev-parse", `refs/heads/${name}`)
 }
 
-const failing = (sha: string) =>
+const scenario = (sha: string, conclusion: "failure" | "success" | null) =>
   writeFileSync(
     join(ghDir, "scenario.json"),
-    JSON.stringify({ repo: SLUG, commits: { [sha]: { check_runs: [{ name: "ci", status: "completed", conclusion: "failure" }] } } }),
+    JSON.stringify({
+      repo: SLUG,
+      commits: { [sha]: { check_runs: [{ name: "ci", status: conclusion ? "completed" : "in_progress", conclusion }] } },
+    }),
   )
 
-const passing = (sha: string) =>
-  writeFileSync(
-    join(ghDir, "scenario.json"),
-    JSON.stringify({ repo: SLUG, commits: { [sha]: { check_runs: [{ name: "ci", status: "completed", conclusion: "success" }] } } }),
-  )
+const failing = (sha: string) => scenario(sha, "failure")
+const passing = (sha: string) => scenario(sha, "success")
 
 const hook = (script: string, payload: unknown, extra: NodeJS.ProcessEnv = {}) =>
   spawnSync(bun, [join(claudeDir, script)], { input: JSON.stringify(payload), env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 })
 
 const pushHook = () => hook("record.ts", { session_id: "s1", cwd: repo, tool_name: "Bash", tool_input: { command: "git push origin feature/x" } })
-const stop = () => hook("stop.ts", { session_id: "s1", cwd: repo, stop_hook_active: false })
+const stop = (extra: NodeJS.ProcessEnv = {}) => hook("stop.ts", { session_id: "s1", cwd: repo, stop_hook_active: false }, extra)
 const blocked = (result: ReturnType<typeof stop>) => String(result.stdout).includes('"decision":"block"')
+const stateFile = () => join(stateDir, "claude-s1.json")
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(join(tmpdir(), "tgg-loop-")))
@@ -112,49 +113,7 @@ beforeEach(() => {
 afterEach(() => rmSync(tmp, { recursive: true, force: true }))
 
 describe("claude code loop probe", () => {
-  test("ten turns, a new failing commit each, block at most the ceiling", () => {
-    makeRepo()
-    let blocks = 0
-    for (let turn = 0; turn < 10; turn++) {
-      const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
-      failing(sha)
-      pushHook()
-      if (blocked(stop())) blocks++
-    }
-    expect(blocks).toBeLessThanOrEqual(CEILING)
-  })
-
-  test("the same loop with the state file cleared between turns", () => {
-    makeRepo()
-    let blocks = 0
-    for (let turn = 0; turn < 10; turn++) {
-      const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
-      failing(sha)
-      pushHook()
-      if (blocked(stop())) blocks++
-      rmSync(join(stateDir, "claude-s1.json"), { force: true })
-    }
-    expect(blocks).toBeLessThanOrEqual(CEILING)
-  })
-
-  test("a state file deleted by a passing gate does not re-arm the block", () => {
-    makeRepo()
-    let blocks = 0
-    for (let turn = 0; turn < 10; turn++) {
-      const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
-      failing(sha)
-      pushHook()
-      if (blocked(stop())) blocks++
-      // The commit then goes green, so the next stop's gate() deletes the state file: the exact
-      // production loop, where the ceiling used to reset with the state and re-arm on the next push.
-      passing(sha)
-      stop()
-      expect(existsSync(join(stateDir, "claude-s1.json"))).toBe(false)
-    }
-    expect(blocks).toBeLessThanOrEqual(CEILING)
-  })
-
-  test("ten turns on one failing commit block once", () => {
+  test("one failing commit blocks once, however many stops", () => {
     makeRepo()
     const sha = branch("feature/x")
     failing(sha)
@@ -163,117 +122,153 @@ describe("claude code loop probe", () => {
     for (let turn = 0; turn < 10; turn++) if (blocked(stop())) blocks++
     expect(blocks).toBe(1)
   })
+
+  test("deleting the state file between stops does not re-arm the same commit", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    failing(sha)
+    pushHook()
+    let blocks = 0
+    for (let turn = 0; turn < 10; turn++) {
+      if (blocked(stop())) blocks++
+      rmSync(stateFile(), { force: true })
+    }
+    expect(blocks).toBe(1)
+  })
+
+  test("a passing gate that deletes the state does not re-arm the same commit", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    failing(sha)
+    pushHook()
+    let blocks = 0
+    for (let turn = 0; turn < 10; turn++) {
+      if (blocked(stop())) blocks++
+      // The commit then goes green, so the next stop's gate() deletes the state file.
+      passing(sha)
+      stop()
+      expect(existsSync(stateFile())).toBe(false)
+    }
+    expect(blocks).toBe(1)
+  })
+
+  test("a zero window does not re-arm the same commit", () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    failing(sha)
+    pushHook()
+    let blocks = 0
+    for (let turn = 0; turn < 10; turn++) if (blocked(stop({ TASK_GH_GUARD_BLOCK_WINDOW: "0" }))) blocks++
+    expect(blocks).toBe(1)
+  })
+
+  test("a genuinely new commit blocks once more", () => {
+    makeRepo()
+    const first = branch("feature/x")
+    failing(first)
+    pushHook()
+    expect(blocked(stop())).toBe(true)
+
+    const second = commit("feature/x")
+    failing(second)
+    pushHook()
+    expect(blocked(stop())).toBe(true)
+  })
 })
 
 describe("opencode loop probe", () => {
   const pluginEnv = () => ({ ...env, TASK_GH_GUARD_ENABLED: "1", TASK_GH_GUARD_REVIEW: "0" })
 
-  test("ten turns, a new failing commit each, nudge at most the ceiling", async () => {
-    makeRepo()
-    const prompts: unknown[] = []
-    const client = {
-      app: { log: async () => ({}) },
-      tui: { showToast: async () => {} },
-      session: { get: async () => ({ data: {} }), prompt: async (a: unknown) => void prompts.push(a) },
-    }
-    await (async () => {
-      const saved = { ...process.env }
-      Object.assign(process.env, pluginEnv())
-      try {
-        const { TaskGhGuard } = await import("../src/opencode/plugin")
-        const hooks = (await TaskGhGuard({ client, directory: repo } as never)) as never as Record<string, (a: never, b?: never) => Promise<void>>
-        for (let turn = 0; turn < 10; turn++) {
-          const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
-          failing(sha)
-          await hooks["tool.execute.before"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never, { args: { command: "git push origin feature/x" } } as never)
-          await hooks["tool.execute.after"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never)
-          await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
-        }
-      } finally {
-        process.env = saved
-      }
-    })()
-    expect(prompts.length).toBeLessThanOrEqual(CEILING)
+  const makeClient = (prompts: unknown[]) => ({
+    app: { log: async () => ({}) },
+    tui: { showToast: async () => {} },
+    session: { get: async () => ({ data: {} }), prompt: async (a: unknown) => void prompts.push(a) },
   })
 
-  test("reloading the plugin each turn cannot re-arm past the ceiling", async () => {
-    makeRepo()
-    const prompts: unknown[] = []
-    const client = {
-      app: { log: async () => ({}) },
-      tui: { showToast: async () => {} },
-      session: { get: async () => ({ data: {} }), prompt: async (a: unknown) => void prompts.push(a) },
-    }
+  const turn = async (hooks: Record<string, (a: never, b?: never) => Promise<void>>, index: number, command = "git push origin feature/x") => {
+    await hooks["tool.execute.before"]({ tool: "bash", callID: `c${index}`, sessionID: "s1" } as never, { args: { command } } as never)
+    await hooks["tool.execute.after"]({ tool: "bash", callID: `c${index}`, sessionID: "s1" } as never)
+    await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
+  }
+
+  const hooksFor = async (prompts: unknown[]) => {
+    const { TaskGhGuard } = await import("../src/opencode/plugin")
+    return (await TaskGhGuard({ client: makeClient(prompts), directory: repo } as never)) as never as Record<string, (a: never, b?: never) => Promise<void>>
+  }
+
+  const withEnv = async (body: () => Promise<void>) => {
     const saved = { ...process.env }
     Object.assign(process.env, pluginEnv())
     try {
-      for (let turn = 0; turn < 10; turn++) {
-        const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
-        failing(sha)
-        // A fresh plugin instance each turn is a reload: the in-memory nudge budget resets, so only
-        // the on-disk ceiling can hold the line.
-        const { TaskGhGuard } = await import("../src/opencode/plugin")
-        const hooks = (await TaskGhGuard({ client, directory: repo } as never)) as never as Record<string, (a: never, b?: never) => Promise<void>>
-        await hooks["tool.execute.before"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never, { args: { command: "git push origin feature/x" } } as never)
-        await hooks["tool.execute.after"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never)
-        await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
-      }
+      await body()
     } finally {
       process.env = saved
     }
-    expect(prompts.length).toBeLessThanOrEqual(CEILING)
-  })
+  }
 
-  test("a state file deleted by a passing gate does not re-arm the nudge", async () => {
-    makeRepo()
-    const prompts: unknown[] = []
-    const client = {
-      app: { log: async () => ({}) },
-      tui: { showToast: async () => {} },
-      session: { get: async () => ({ data: {} }), prompt: async (a: unknown) => void prompts.push(a) },
-    }
-    const saved = { ...process.env }
-    Object.assign(process.env, pluginEnv())
-    try {
-      const { TaskGhGuard } = await import("../src/opencode/plugin")
-      const hooks = (await TaskGhGuard({ client, directory: repo } as never)) as never as Record<string, (a: never, b?: never) => Promise<void>>
-      for (let turn = 0; turn < 10; turn++) {
-        const sha = turn === 0 ? branch("feature/x") : commit("feature/x")
-        failing(sha)
-        await hooks["tool.execute.before"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never, { args: { command: "git push origin feature/x" } } as never)
-        await hooks["tool.execute.after"]({ tool: "bash", callID: `c${turn}`, sessionID: "s1" } as never)
-        await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
-        // The commit then goes green: the next idle calls gate(), which deletes the state file.
-        passing(sha)
-        await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
-      }
-    } finally {
-      process.env = saved
-    }
-    expect(prompts.length).toBeLessThanOrEqual(CEILING)
-  })
-
-  test("records the nudge in the state file so the ceiling survives a restart", async () => {
+  test("one failing commit nudges once, however many turns", async () => {
     makeRepo()
     const sha = branch("feature/x")
     failing(sha)
-    const client = {
-      app: { log: async () => ({}) },
-      tui: { showToast: async () => {} },
-      session: { get: async () => ({ data: {} }), prompt: async () => {} },
-    }
-    const saved = { ...process.env }
-    Object.assign(process.env, pluginEnv())
-    try {
-      const { TaskGhGuard } = await import("../src/opencode/plugin")
-      const hooks = (await TaskGhGuard({ client, directory: repo } as never)) as never as Record<string, (a: never, b?: never) => Promise<void>>
-      await hooks["tool.execute.before"]({ tool: "bash", callID: "c1", sessionID: "s1" } as never, { args: { command: "git push origin feature/x" } } as never)
-      await hooks["tool.execute.after"]({ tool: "bash", callID: "c1", sessionID: "s1" } as never)
-      await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } } as never)
-    } finally {
-      process.env = saved
-    }
-    const budget = JSON.parse(readFileSync(join(stateDir, "budget", "opencode-s1.json"), "utf8")) as Record<string, unknown>
-    expect(Object.keys(budget)).toHaveLength(1)
+    const prompts: unknown[] = []
+    await withEnv(async () => {
+      const hooks = await hooksFor(prompts)
+      for (let index = 0; index < 10; index++) await turn(hooks, index)
+    })
+    expect(prompts.length).toBe(1)
+  })
+
+  test("deleting the state file between turns does not re-arm the same commit", async () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    failing(sha)
+    const prompts: unknown[] = []
+    await withEnv(async () => {
+      const hooks = await hooksFor(prompts)
+      for (let index = 0; index < 10; index++) {
+        await turn(hooks, index)
+        rmSync(join(stateDir, "opencode-s1.json"), { force: true })
+      }
+    })
+    expect(prompts.length).toBe(1)
+  })
+
+  test("reloading the plugin each turn does not re-arm the same commit", async () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    failing(sha)
+    const prompts: unknown[] = []
+    await withEnv(async () => {
+      for (let index = 0; index < 10; index++) await turn(await hooksFor(prompts), index)
+    })
+    expect(prompts.length).toBe(1)
+  })
+
+  test("a genuinely new commit nudges once more", async () => {
+    makeRepo()
+    const first = branch("feature/x")
+    failing(first)
+    const prompts: unknown[] = []
+    await withEnv(async () => {
+      const hooks = await hooksFor(prompts)
+      await turn(hooks, 0)
+      const second = commit("feature/x")
+      failing(second)
+      await turn(hooks, 1)
+    })
+    expect(prompts.length).toBe(2)
+  })
+
+  test("records the delivery in the report file so it survives a restart", async () => {
+    makeRepo()
+    const sha = branch("feature/x")
+    failing(sha)
+    const prompts: unknown[] = []
+    await withEnv(async () => {
+      const hooks = await hooksFor(prompts)
+      await turn(hooks, 0)
+    })
+    const report = JSON.parse(readFileSync(join(stateDir, "budget", "opencode-s1.json"), "utf8")) as Record<string, unknown>
+    expect(Object.keys(report)).toHaveLength(1)
   })
 })

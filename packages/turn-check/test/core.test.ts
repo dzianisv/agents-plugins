@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { pruneAuditLines } from "../src/core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../src/core/opencode"
-import { auditorSystem, formatFeedback, hasAgentWork, parseVerdict, prDraft, renderTranscript, type Msg } from "../src/core/prompt"
+import { auditorSystem, currentTurn, formatFeedback, hasAgentWork, parseVerdict, prDraft, renderTranscript, type Msg } from "../src/core/prompt"
 
 const msg = (id: string, role: string, parts: any[]): Msg => ({ info: { id, role }, parts })
 const text = (t: string, extra: object = {}) => ({ type: "text", text: t, ...extra })
@@ -93,6 +93,22 @@ describe("hasAgentWork", () => {
   })
   test("only looks after the latest user message", () => {
     expect(hasAgentWork([msg("1", "assistant", [text("old")]), msg("2", "user", [text("new")])])).toBe(false)
+  })
+})
+
+describe("currentTurn", () => {
+  test("keeps the last user message and the agent work after it, dropping older turns", () => {
+    const msgs = [
+      msg("1", "user", [text("first ask")]),
+      msg("2", "assistant", [text("first answer")]),
+      msg("3", "user", [text("second ask")]),
+      msg("4", "assistant", [text("second answer")]),
+    ]
+    expect(currentTurn(msgs).map((m) => m.info.id)).toEqual(["3", "4"])
+  })
+  test("returns everything when there is no user message", () => {
+    const msgs = [msg("1", "assistant", [text("only")])]
+    expect(currentTurn(msgs)).toEqual(msgs)
   })
 })
 

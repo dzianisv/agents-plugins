@@ -1,6 +1,5 @@
 // State files and block-window bookkeeping for task-gh-guard.
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
-import { countInWindow } from "../shared/inject-limit"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -91,24 +90,17 @@ export function repoKey(entry: ReportEntry): string {
   return entry.repo || (entry.owner && entry.name ? `${entry.owner}/${entry.name}` : "") || "unknown"
 }
 
-/** One budget key per pushed commit, so a new commit still blocks inside the window. */
+/** One report key per pushed commit: each commit is delivered for once, ever. */
 export function reportKey(entry: ReportEntry): string {
   return `${repoKey(entry)}|${entry.branch ?? "?"}@${String(entry.sha ?? "").slice(0, 7)}`
 }
 
-/** Seconds before the same commit may block a stop again (default: one hour). */
-export function blockWindow(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = (env.TASK_GH_GUARD_BLOCK_WINDOW ?? "").trim()
-  if (!/^[+-]?\d+$/.test(raw)) return 3600
-  return Math.max(0, Number.parseInt(raw, 10))
-}
-
-// The block budget lives in its own file, next to the state file but never deleted with it: the gate
-// removes the state file when every recorded commit passes, and a budget stored there would reset and
-// re-arm the block on the next push (that is the loop this file exists to prevent).
+// The report lives in its own file, next to the state file but never deleted with it: the gate
+// removes the state file when every recorded commit passes, and a report stored there would reset and
+// re-fire the block on the next push (that is the loop this file exists to prevent).
 const budgetPathFor = (path: string): string => join(dirname(path), "budget", basename(path))
 
-/** The recorded blocks for a session, keyed by repo|branch@sha7. */
+/** The recorded deliveries for a session, keyed by repo|branch@sha7. */
 export function readBudget(path: string): Record<string, { at: number }> {
   try {
     const data = JSON.parse(readFileSync(budgetPathFor(path), "utf8")) as unknown
@@ -118,7 +110,7 @@ export function readBudget(path: string): Record<string, { at: number }> {
   }
 }
 
-/** Replaces the recorded blocks for a session. */
+/** Replaces the recorded deliveries for a session. */
 export function writeBudget(path: string, budget: Record<string, { at: number }>): void {
   const file = budgetPathFor(path)
   const parent = dirname(file)
@@ -127,31 +119,17 @@ export function writeBudget(path: string, budget: Record<string, { at: number }>
   writeFileSync(file, `${JSON.stringify(budget, null, 2)}\n`, { mode: 0o600 })
 }
 
-/** True when every given commit blocked a stop within the window. */
-export function reported(path: string, entries: ReportEntry[], now: number, window: number): boolean {
-  if (!entries.length || window <= 0) return false
+/**
+ * True when every given commit has already been delivered for. There is no window: a commit is
+ * delivered once and never again, so a stop that repeats the same red commit only notifies.
+ */
+export function reported(path: string, entries: ReportEntry[]): boolean {
+  if (!entries.length) return false
   const seen = readBudget(path)
-  if (!seen || typeof seen !== "object") return false
-  for (const entry of entries) {
-    const at = seen[reportKey(entry)]?.at
-    if (typeof at !== "number" || now - at >= window) return false
-  }
-  return true
+  return entries.every((entry) => typeof seen[reportKey(entry)]?.at === "number")
 }
 
-/** Blocks allowed per branch inside one window (default 3), so a new commit cannot re-arm forever. */
-export function maxBlocks(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = (env.TASK_GH_GUARD_MAX_BLOCKS ?? "").trim()
-  if (!/^\+?\d+$/.test(raw)) return 3
-  return Number.parseInt(raw, 10)
-}
-
-/** How many stops this branch already blocked inside the window, across every sha. */
-export function blocksInWindow(path: string, entry: ReportEntry, now: number, window: number): number {
-  return countInWindow(readBudget(path), `${repoKey(entry)}|${entry.branch ?? "?"}@`, now, window)
-}
-
-/** Marks every given commit as reported at `now`. */
+/** Marks every given commit as delivered. */
 export function markReported(path: string, entries: ReportEntry[], now: number): void {
   const seen = readBudget(path)
   for (const entry of entries) seen[reportKey(entry)] = { at: now }

@@ -57,7 +57,7 @@ const timeoutFloor: Rule = {
 const injectionBounded: Rule = {
   id: "injection-bounded",
   applies: (text) => /session\.prompt\(|"decision": ?"block"|decision: "block"/.test(text),
-  ok: (text) => /inject-limit|blocksInWindow|mayInject/.test(text),
+  ok: (text) => /inject-limit|blocksInWindow|mayInject|reported\(/.test(text),
   detail: "an injected prompt or stop block must use the shared ceiling (packages/shared/src/inject-limit.ts)",
 }
 

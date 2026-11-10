@@ -229,9 +229,10 @@ async function scenarioSwitch() {
 
   const rows = trail(paths)
   const switched = fake.requests.some((r) => r.model === "model-b")
+  const switches = rows.filter((r) => r.event === "switch")
   check(switched, "fake provider served the fallback model", fake.requests.map((r) => r.model).join(","))
   check(rows.some((r) => r.event === "failure" && r.reason === "free-limit"), "free-limit failure recorded")
-  check(rows.some((r) => r.event === "switch" && r.to === "fake/model-b"), "model switch recorded")
+  check(switches.length === 1 && switches[0].to === "fake/model-b", "exactly one model switch", JSON.stringify(switches))
   check(rows.some((r) => r.event === "prompt" && r.switched === true), "auto-resume prompt recorded")
   check(rows.some((r) => r.event === "clear" && r.reason === "succeeded"), "resumed run completed")
   check(!existsSync(paths.state) || Object.keys(JSON.parse(readFileSync(paths.state, "utf8")).sessions).length === 0, "pending state cleared after success")

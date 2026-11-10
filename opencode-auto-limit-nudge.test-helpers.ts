@@ -11,7 +11,8 @@
 export const AUTO_RESUME_PREFIX = "[auto-resume]"
 
 const RETRYABLE = /usage limit|rate.?limit|quota|too many requests|\b429\b|overloaded|capacity|try again in|resets? in/i
-const FREE_LIMIT = /free usage limit|free limit|free models? (?:work|usage)/i
+const FREE_LIMIT =
+  /free usage limit|free limit|free models? (?:work|usage)|exceeded your (?:current )?quota|quota exceeded|out of (?:free )?credits|insufficient_quota/i
 const PERMANENT = /no longer supports free models|update to the latest|invalid api key|unauthorized|authentication|not found|model not found|insufficient permissions/i
 
 export type AutoLimitResumeConfig = {

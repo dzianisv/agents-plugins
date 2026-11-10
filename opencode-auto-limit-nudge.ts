@@ -17,14 +17,24 @@
  * changes the model used by the next run.
  */
 
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
 const AUTO_RESUME_PREFIX = "[auto-resume]"
 
 const RETRYABLE = /usage limit|rate.?limit|quota|too many requests|\b429\b|overloaded|capacity|try again in|resets? in/i
-const FREE_LIMIT = /free usage limit|free limit|free models? (?:work|usage)/i
+const FREE_LIMIT =
+  /free usage limit|free limit|free models? (?:work|usage)|exceeded your (?:current )?quota|quota exceeded|out of (?:free )?credits|insufficient_quota/i
 const PERMANENT = /no longer supports free models|update to the latest|invalid api key|unauthorized|authentication|not found|model not found|insufficient permissions/i
 
 type AutoLimitResumeConfig = {
@@ -205,7 +215,7 @@ type Pending = {
   switchedTo?: string
   reason: string
   message: string
-  claim?: { instance: string; at: number }
+  tried?: string[]
 }
 
 type State = { version: 1; sessions: Record<string, Pending> }
@@ -244,12 +254,15 @@ const modelKey = (model?: { providerID?: string; id?: string; modelID?: string }
 
 type Registry = {
   owner?: string
+  instances: Set<string>
   state: State
 }
 
 const registry: Registry = ((globalThis as any).__autoLimitResume ??= {
   state: { version: 1, sessions: {} },
+  instances: new Set<string>(),
 })
+if (!registry.instances) registry.instances = new Set<string>()
 
 export default {
   id: "opencode-auto-limit-resume",
@@ -260,7 +273,8 @@ export default {
     const instance = crypto.randomUUID()
     // opencode can instantiate the same plugin more than once (global + project
     // config). The most recently loaded instance owns the shared registry and
-    // the watchdog; hot reload takes over without a gap.
+    // the watchdog; ownership is handed back when it unloads.
+    registry.instances.add(instance)
     registry.owner = instance
     registry.state = readState()
 
@@ -282,6 +296,34 @@ export default {
 
     const persist = () => writeState(registry.state)
 
+    // Cross-process guard: one exclusive lock file per session, so two server
+    // processes cannot both prompt the same session. Stale locks expire so a
+    // crashed process cannot block a resume forever.
+    const lockPath = (sessionID: string) =>
+      join(cacheDir(), `claim-${sessionID.replace(/[^a-zA-Z0-9_-]/g, "")}.lock`)
+    const acquire = (sessionID: string) => {
+      try {
+        mkdirSync(cacheDir(), { recursive: true, mode: 0o700 })
+        writeFileSync(lockPath(sessionID), String(process.pid), { flag: "wx", mode: 0o600 })
+        return true
+      } catch (error: any) {
+        if (error?.code !== "EEXIST") return true
+        try {
+          if (Date.now() - statSync(lockPath(sessionID)).mtimeMs > 60_000) {
+            unlinkSync(lockPath(sessionID))
+            writeFileSync(lockPath(sessionID), String(process.pid), { flag: "wx", mode: 0o600 })
+            return true
+          }
+        } catch {}
+        return false
+      }
+    }
+    const release = (sessionID: string) => {
+      try {
+        unlinkSync(lockPath(sessionID))
+      } catch {}
+    }
+
     const drop = (sessionID: string, reason: string, extra: Record<string, unknown> = {}) => {
       const pending = registry.state.sessions[sessionID]
       if (!pending) return
@@ -295,7 +337,6 @@ export default {
       if (!pending) return
       if (registry.owner !== instance) return
       const delay = Math.max(250, pending.nextAt - Date.now())
-      pending.claim = undefined
       persist()
       const timer = setTimeout(() => void attempt(sessionID, "timer"), delay)
       timer?.unref?.()
@@ -321,18 +362,21 @@ export default {
 
     const running = (session: any) => {
       if (!session) return false
-      if (session.outcome === "failed" || session.outcome === "succeeded" || session.outcome === "interrupted") return false
+      if (session.outcome) return false
+      if (session.status && session.status !== "idle") return true
       const busy = Number(session?.time?.busy ?? 0)
       const idle = Number(session?.time?.idle ?? 0)
+      if (busy > 0 && idle === 0) return true
       return busy > idle
     }
 
     const chooseFallback = (pending: Pending): { providerID: string; id: string } | undefined => {
-      const candidates = cfg.fallbackModels
+      const failed = modelKey({ providerID: pending.failedProviderID, id: pending.failedModelID })
+      const tried = new Set(pending.tried ?? [])
+      return cfg.fallbackModels
         .map(parseModel)
         .filter((model): model is { providerID: string; id: string } => !!model)
-        .filter((model) => modelKey(model) !== modelKey({ providerID: pending.failedProviderID, id: pending.failedModelID }))
-      return candidates[0]
+        .filter((model) => modelKey(model) !== failed && !tried.has(modelKey(model)!))[0]
     }
 
     const backoff = (attempts: number) =>
@@ -342,9 +386,15 @@ export default {
       if (!sessionID || registry.owner !== instance) return
       if (inFlight.has(sessionID)) return
       inFlight.add(sessionID)
+      const claimed = acquire(sessionID)
       try {
+        if (!claimed) {
+          hold(sessionID, 10_000, "claimed-elsewhere")
+          return
+        }
         await attemptOnce(sessionID, trigger)
       } finally {
+        if (claimed) release(sessionID)
         inFlight.delete(sessionID)
       }
     }
@@ -356,16 +406,6 @@ export default {
       if (pending.nextAt > now + 250) return
       if (now - pending.firstAt > cfg.maxWindowMs) return giveUp(sessionID, "window")
       if (pending.attempts >= cfg.maxAttempts) return giveUp(sessionID, "attempts")
-
-      // Another process may have claimed this resume already.
-      const disk = readState().sessions[sessionID]
-      if (disk?.claim && disk.claim.instance !== instance && now - disk.claim.at < 60_000) {
-        return hold(sessionID, 10_000, "claimed-elsewhere", { by: disk.claim.instance })
-      }
-      pending = registry.state.sessions[sessionID]
-      if (!pending) return
-      pending.claim = { instance, at: now }
-      persist()
 
       let session: any
       try {
@@ -402,8 +442,11 @@ export default {
           await ctx.session.switchModel({ sessionID, model: { id: target.id, providerID: target.providerID } })
           pending = registry.state.sessions[sessionID]
           if (!pending) return
-          pending.switchedTo = modelKey(target)
-          record({ event: "switch", sessionID, from, to: pending.switchedTo, trigger })
+          const to = modelKey(target)
+          if (!to) return
+          pending.switchedTo = to
+          pending.tried = [...(pending.tried ?? []), to]
+          record({ event: "switch", sessionID, from, to, trigger })
           persist()
           toast(`Switched ${from ?? "model"} to ${pending.switchedTo} and resuming.`, "info")
         }
@@ -475,7 +518,6 @@ export default {
       pending.lastFailureAt = now
       pending.reason = verdict.reason
       pending.message = verdict.message
-      pending.claim = undefined
 
       // If the run that just failed was our failover target, that target is
       // now the failed model; pick a different one next time.
@@ -578,9 +620,16 @@ export default {
     return () => {
       controller.abort()
       clearInterval(watchdog)
-      record({ event: "dispose", instance, owner: registry.owner === instance })
-      if (registry.owner !== instance) return
-      registry.owner = undefined
+      registry.instances.delete(instance)
+      const wasOwner = registry.owner === instance
+      if (!wasOwner) {
+        record({ event: "dispose", instance, owner: false })
+        return
+      }
+      // Hand ownership to a surviving instance instead of going headless.
+      const next = registry.instances.values().next().value
+      registry.owner = next
+      record({ event: "dispose", instance, owner: true, handedTo: next })
     }
   },
 }

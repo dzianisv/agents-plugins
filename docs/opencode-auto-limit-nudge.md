@@ -38,6 +38,10 @@ over to a working model within seconds, and to stop cancelling on `started`.
 - or `response.status_code` is 429/529
 - or the message matches `/usage limit|rate limit|quota|too many requests|429|overloaded|capacity|try again in/`
 
+Messages treated as a free-tier limit (switch immediately) include
+`free usage limit`, `exceeded your current quota`, `quota exceeded`,
+`out of credits`, and `insufficient_quota`.
+
 Permanent errors are skipped: auth failures and
 `"This version of OpenCode Desktop no longer supports free models"`.
 
@@ -73,12 +77,15 @@ Verified against opencode 2.2.5. A real failure event looks like:
    with a `[auto-resume]` continuation message.
 5. **Persist.** Pending work survives plugin reload, location teardown, and
    server restart: it is written to disk and restored on the next `setup`.
-   A watchdog (`watchdogMs`, default 15s) re-arms anything overdue.
+   A watchdog (`watchdogMs`, default 15s) re-arms anything overdue. Ownership
+   is handed to a surviving plugin instance if the newest one unloads.
 6. **Stop.** Clears on success or interruption; gives up after `maxAttempts` or
    `maxWindowMs`; does not schedule a retry when the provider reset is further
    out than the window.
-7. **Cross-process guard.** A pending entry carries a short-lived claim, so two
-   server processes do not both prompt the same session.
+7. **No repeats.** A fallback that already failed is not tried again while
+   another candidate exists (no A→B→A ping-pong).
+8. **Cross-process guard.** An exclusive lock file per session (60s stale
+   timeout) prevents two server processes from prompting the same session.
 
 ## Configuration
 
@@ -151,23 +158,28 @@ npm run test:auto-limit                    # real opencode + fake provider
 
 `npm run test:auto-limit` starts a real `opencode serve`, points it at a local
 OpenAI-compatible server that returns 429 and then streams a completion, and
-asserts: free-limit recorded, model switched to the fallback, continuation
-prompt admitted, resumed run completed, pending state cleared. A second
-scenario serves 429 forever and asserts a clean give-up with no hang.
+asserts: free-limit recorded, exactly one model switch to the fallback,
+continuation prompt admitted, resumed run completed, pending state cleared. A
+second scenario serves 429 forever and asserts a clean give-up with no hang.
 
 Last run (`2026-11-10`):
 
 ```
 PASS fake provider served the fallback model :: model-a,model-a,model-b,model-b
 PASS free-limit failure recorded
-PASS model switch recorded
+PASS exactly one model switch
 PASS auto-resume prompt recorded
 PASS resumed run completed
 PASS pending state cleared after success
-PASS run terminated instead of hanging :: 498ms
+PASS run terminated instead of hanging :: 499ms
 PASS give-up after attempt cap
 PASS failure surfaced to the user
 ALL PASS
 ```
 
-Full suite: 404 passed, 20 skipped; `tsc --noEmit` clean.
+Live production check (real background server, real installed plugin, local
+429 provider): failure → switch `fake/model-a` → `fake/model-b` after 5s →
+resume → quota again → retry after 10s → succeeded, `state.json` empty, no
+leftover lock files.
+
+Full suite: 405 passed, 20 skipped; `tsc --noEmit` clean.

@@ -238,6 +238,42 @@ describe("auto-limit-resume: state machine", () => {
     harness.dispose()
   })
 
+  it("never switches back to an already tried fallback", async () => {
+    const harness = await boot({ ...fast, fallbackModels: ["fake/model-b", "fake/model-c"], switchAfterAttempts: 1 })
+    harness.host.session("ses_i")
+
+    harness.host.fail("ses_i")
+    await waitFor(() => harness.host.switches.length === 1)
+    harness.host.session("ses_i", { outcome: "failed" })
+    harness.host.fail("ses_i")
+    await waitFor(() => harness.host.switches.length === 2)
+    assert.deepStrictEqual(
+      harness.host.switches.map((s) => s.model.id),
+      ["model-b", "model-c"],
+    )
+
+    harness.host.session("ses_i", { outcome: "failed" })
+    harness.host.fail("ses_i")
+    await waitFor(() => harness.host.prompts.length >= 3)
+    assert.strictEqual(harness.host.switches.length, 2, "no ping-pong back to model-b")
+
+    harness.dispose()
+  })
+
+  it("keeps working after the owning instance unloads", async () => {
+    const harness = await boot(fast)
+    harness.host.session("ses_j")
+
+    const dispose2 = await plugin.setup(harness.host.ctx as any)
+    harness.dispose() // instance 1 is no longer the owner; ownership moves to instance 2
+
+    harness.host.fail("ses_j")
+    await waitFor(() => harness.host.prompts.length === 1)
+    assert.ok(records(harness.dir).some((r) => r.event === "dispose" && r.owner === false))
+
+    dispose2?.()
+  })
+
   it("gives up after maxAttempts", async () => {
     const harness = await boot({ ...fast, maxAttempts: 2, fallbackModels: [] })
     harness.host.session("ses_f")

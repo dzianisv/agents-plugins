@@ -76,7 +76,7 @@ describe("auditSession", () => {
     expect(argv.some((a: string) => a.includes("RULES:") || a.includes("TRANSCRIPT:"))).toBe(false)
     const sent = call.stdin
     expect(sent.startsWith("You are a strict compliance auditor")).toBe(true)
-    expect(sent).toContain("RULES:\nRULE: reply in 6 lines max")
+    expect(sent).toContain("RULE: reply in 6 lines max")
     expect(sent).toContain("TRANSCRIPT:\n\n[#0 USER]\nfix it\n\n[#1 ASSISTANT]\ndone, here is a long answer")
   })
 
@@ -117,6 +117,14 @@ describe("auditSession", () => {
     expect(await auditSession("s1", env.transcript)).toBe("error")
     expect(lastAudited("s1")).toBe("")
     expect(readFileSync(pendingPath("s1"), "utf8").startsWith("turn-check ERROR:")).toBe(true)
+  })
+
+  test("a transient transport error is retried once and can still pass", async () => {
+    process.env.FAKE_MODE = "transport-once"
+    process.env.FAKE_ONCE_FILE = join(env.tmp, "transport-once")
+    process.env.FAKE_REPLY = PASS_REPLY
+    expect(await auditSession("s1", env.transcript)).toBe("pass")
+    expect(env.audits()[0].verdict).toBe("PASS")
   })
 
   test("a nonzero exit is a loud error with stderr", async () => {

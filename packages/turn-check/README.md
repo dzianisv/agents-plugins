@@ -1,10 +1,18 @@
 # turn-check
 
 Plugin for opencode and Claude Code. When the agent stops, a cheap model reads the conversation
-and `~/.agents/AGENTS.md`, then lists the rules the agent broke, with quotes. The findings arrive
-as a note on your next message. Every time that happens you also get a desktop notification
-("N rule violation(s): rule; rule"), on both runtimes, never deduplicated; opencode v1 adds a toast.
-`AGENTS_NOTIFY=0` turns it off. Design and limits: [DESIGN.md](DESIGN.md).
+and the AGENTS.md files that apply (`~/.agents/AGENTS.md`, then the project's `AGENTS.md` and `.agents/AGENTS.md`, each labelled with its path; `SUPERVISOR_RULES` overrides all of them), then lists the rules the agent broke, with quotes. The findings are
+delivered immediately: in Claude Code the Stop hook blocks with them, so the agent fixes them in the
+same turn, within a 90 second wait (`SUPERVISOR_INLINE_TIMEOUT`); if the judge is slower than that,
+the audit finishes in the background and the note falls back to your next message. In opencode the
+plugin prompts the session with a `<system-reminder>` as soon as the audit returns. Every note starts
+with `[turn-check]`, and only a note that lists at least one violation is ever injected: an audit
+error waits for the next prompt instead. Every time findings are delivered you also
+get a desktop notification ("N rule violation(s): rule; rule"), on both runtimes, never deduplicated;
+opencode v1 adds a toast. `AGENTS_NOTIFY=0` turns it off. Delivery is bounded by the shared ceiling in
+`packages/shared/src/inject-limit.ts` (at most 3 notes per session per hour, then one notification and
+silence until the window passes); the rules behind it are in AGENTS.md, "Plugin loop safety".
+Design and limits: [DESIGN.md](DESIGN.md).
 
 ## When it cannot run
 
@@ -43,11 +51,11 @@ v2 differences from v1:
 |---|---|
 | `SUPERVISOR_ENABLED` | `1` (`0` turns it off) |
 | `SUPERVISOR_MODEL` | `fireworks-ai/accounts/fireworks/models/deepseek-v4p1-flash` |
-| `SUPERVISOR_RULES` | `~/.agents/AGENTS.md` |
+| `SUPERVISOR_RULES` | unset: the global `~/.agents/AGENTS.md` plus the project's `AGENTS.md` and `.agents/AGENTS.md`; set: that one file only |
 | `SUPERVISOR_MAX_CHARS` | `60000` |
 | `SUPERVISOR_HOME` | `~/.cache/supervisor` (audit log and Claude Code state; directory 0700, files 0600) |
 
-`SUPERVISOR_JUDGE_TIMEOUT` (seconds): judge limit, default `120` in opencode and `240` in Claude Code.
+`SUPERVISOR_JUDGE_TIMEOUT` (seconds): judge limit, default `240` in both runtimes.
 
 `SUPERVISOR_AUDIT_RUN=1` (opencode v1 only): audit in a headless `opencode run` too. In v1 the plugin stays off there, because `run` exits at idle and the feedback could never be delivered. In v2 the plugin lives in the server, so `run` sessions are audited regardless and this flag has no effect.
 

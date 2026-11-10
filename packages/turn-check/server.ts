@@ -1,16 +1,21 @@
 // opencode v2 entry: same audit pipeline as v1, with the judge as a sessionless ctx.generate.text
 // call and feedback attached through the v2 context hook. Keep this file's exports.
-import { readFileSync, realpathSync } from "node:fs"
-import { homedir } from "node:os"
+import { realpathSync } from "node:fs"
 import { join } from "node:path"
 import { auditOnce, type AuditStore } from "./src/core/audit"
 import { pruneLog, record } from "./src/core/audit-log"
 import { parseModel } from "./src/core/opencode"
-import { DEFAULT_MODEL, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
-import { stateDir } from "./src/core/state"
+import { DEFAULT_MODEL, isViolationFeedback, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
+import { composeRules, readRules } from "./src/core/rules"
+import { readInjectBudget, stateDir, writeInjectBudget } from "./src/core/state"
+import { countInWindow, mayInject, recordInjection, type Budget } from "./src/shared/inject-limit"
 import { notify } from "./src/shared/notify"
 
-const DEFAULT_JUDGE_TIMEOUT_MS = 120000
+const DEFAULT_JUDGE_TIMEOUT_MS = 240000
+/** At most this many immediate feedback injections per session per window. */
+const MAX_INJECTIONS = 3
+/** The window the injection ceiling is counted over, in seconds. */
+const INJECTION_WINDOW = 3600
 
 /** Convert session.context entries to the Msg shape core helpers consume. */
 export function toMsgs(infos: any[]): Msg[] {
@@ -73,7 +78,7 @@ export default {
 
     const spec = process.env.SUPERVISOR_MODEL ?? DEFAULT_MODEL
     const model = parseModel(spec)
-    const rulesPath = process.env.SUPERVISOR_RULES ?? join(homedir(), ".agents", "AGENTS.md")
+    const rules = () => composeRules(readRules(process.env, ctx.location?.directory))
     const maxChars = Number(process.env.SUPERVISOR_MAX_CHARS ?? 60000)
     const judgeTimeoutMs = Number(process.env.SUPERVISOR_JUDGE_TIMEOUT ?? DEFAULT_JUDGE_TIMEOUT_MS / 1000) * 1000
 
@@ -119,6 +124,26 @@ export default {
       }
     }
 
+    /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
+    const injectFeedback = async (sessionID: string, text: string) => {
+      if (!isViolationFeedback(text)) return
+      const now = Math.floor(Date.now() / 1000)
+      // Bounded per session on disk, so a plugin reload cannot reset the ceiling and start a loop.
+      const dir = stateDir()
+      const budget = readInjectBudget(sessionID, dir)
+      if (!mayInject(budget, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
+        log(`not injecting again this hour for ${sessionID}: ${MAX_INJECTIONS} findings already delivered`)
+        return
+      }
+      writeInjectBudget(sessionID, recordInjection(budget, `${sessionID}|${countInWindow(budget, `${sessionID}|`, now, INJECTION_WINDOW)}`, now), dir)
+      try {
+        await ctx.session.prompt({ sessionID, text: `<system-reminder>\n${text}\n</system-reminder>` })
+        pending.delete(sessionID)
+      } catch (err) {
+        log(`feedback inject failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
     const audit = async (sessionID: string) => {
       const msgs = toMsgs(await ctx.session.context({ sessionID }))
       const last = msgs.at(-1)
@@ -127,7 +152,10 @@ export default {
         lastAudited: () => audited.get(sessionID) ?? "",
         markAudited: (messageID) => void audited.set(sessionID, messageID),
         readPending: () => pending.get(sessionID) ?? "",
-        writePending: (text) => void pending.set(sessionID, text),
+        writePending: (text) => {
+          pending.set(sessionID, text)
+          void injectFeedback(sessionID, text)
+        },
         clearPending: () => {
           pending.delete(sessionID)
           injected.delete(sessionID)
@@ -137,7 +165,7 @@ export default {
         sessionID,
         msgs,
         messageID: last.info.id,
-        rules: () => readFileSync(rulesPath, "utf8"),
+        rules,
         judge,
         maxChars,
         model: spec,

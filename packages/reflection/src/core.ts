@@ -5,6 +5,7 @@
 // Not ported (see README): the TUI toasts, the separate judge/cross-review/routing sessions, and the
 // task-routed feedback model. `session.idle` is replaced by the `session.execution.*` events.
 import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { countInWindow, mayInject, recordInjection, type Budget } from "../../shared/src/inject-limit"
 import { join } from "node:path"
 import {
   MAX_ATTEMPTS,
@@ -35,12 +36,17 @@ import {
 
 export { debug, initDebugLogger } from "../reflection-3"
 
+/** Notes a session may receive per window, so reflection cannot drive an endless loop. */
+const INJECTION_WINDOW = 3600
+
 /** Mutable per-instance reflection state, the v2 counterpart of the v1 closure variables. */
 export type ReflectionState = {
   judgeSessionIds: Set<string>
   lastReflectedMsgId: Map<string, string>
   active: Set<string>
   attempts: Map<string, number>
+  /** Injection budget: reflection feedback per session per window, so the loop cannot run forever. */
+  injections: Budget
   toolReflectionPrompt: string | null
   currentSessionId: string | null
 }
@@ -51,6 +57,7 @@ export const createState = (): ReflectionState => ({
   lastReflectedMsgId: new Map(),
   active: new Set(),
   attempts: new Map(),
+  injections: {},
   toolReflectionPrompt: null,
   currentSessionId: null,
 })
@@ -224,6 +231,14 @@ export async function runReflection(ctx: any, sessionID: string, state: Reflecti
       usePlanningLoopMessage,
       actionLoopCheck.detected,
     )
+
+    const now = Math.floor(Date.now() / 1000)
+    if (!mayInject(state.injections, `${sessionID}|`, now, INJECTION_WINDOW, MAX_ATTEMPTS)) {
+      state.lastReflectedMsgId.set(sessionID, lastUserMsgId)
+      debug("Reflection injection ceiling reached for", sessionID.slice(0, 8))
+      return
+    }
+    state.injections = recordInjection(state.injections, `${sessionID}|${countInWindow(state.injections, `${sessionID}|`, now, INJECTION_WINDOW)}`, now)
 
     try {
       await ctx.session.prompt({ sessionID, text: feedbackText })

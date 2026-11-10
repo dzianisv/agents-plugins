@@ -42,7 +42,7 @@ function channel() {
 }
 
 function fakeCtx(opts: { parentID?: string; replies?: string[]; verdict?: string; convo?: any[]; foreignDir?: string }) {
-  const calls = { generated: [] as any[], contextHook: null as any, registrations: 0 }
+  const calls = { generated: [] as any[], contextHook: null as any, registrations: 0, injected: [] as any[] }
   const events = channel()
   const ctx: any = {
     location: { directory: dir },
@@ -50,6 +50,7 @@ function fakeCtx(opts: { parentID?: string; replies?: string[]; verdict?: string
     session: {
       get: async () => ({ parentID: opts.parentID, location: { directory: opts.foreignDir ?? dir } }),
       context: async () => opts.convo ?? conversation,
+      prompt: async (input: any) => void calls.injected.push(input),
       hook: async (name: string, cb: any) => {
         if (name === "context") calls.contextHook = cb
         calls.registrations++
@@ -99,52 +100,39 @@ test("idle audit calls the judge with rules and transcript, and records the verd
   expect(entry.violations[0].rule).toBe("Replies max 6 lines")
 })
 
-test("a FAIL verdict attaches feedback to the next user message and re-attaches it on every step of that turn", async () => {
+test("a FAIL verdict is injected immediately and not re-attached to the next user message", async () => {
   const { ctx, calls, events } = fakeCtx({ verdict: FAIL("Replies max 6 lines") })
   await plugin.setup(ctx)
   idle(events, "s2")
-  await waitFor(() => calls.generated.length === 1)
-  const hook = calls.contextHook
+  await waitFor(() => calls.injected.length === 1)
 
+  expect(calls.injected[0].sessionID).toBe("s2")
+  expect(calls.injected[0].text).toContain("[turn-check]")
+  expect(calls.injected[0].text).toContain("Replies max 6 lines")
+  expect(calls.injected[0].text).toContain("<system-reminder>")
+
+  const hook = calls.contextHook
   const step1 = { sessionID: "s2", messages: [userMessage("u1")] }
   await hook(step1)
-  expect(step1.messages[0].content).toHaveLength(2)
-  expect(step1.messages[0].content[1].text).toContain("Replies max 6 lines")
-  expect(step1.messages[0].content[1].text).toContain("<system-reminder>")
+  expect(step1.messages[0].content).toHaveLength(1)
 
-  // same array again: no double attach
-  await hook(step1)
-  expect(step1.messages[0].content).toHaveLength(2)
-
-  // later steps rebuild the messages; the same user message gets the note again
-  for (let step = 2; step <= 3; step++) {
-    const reloaded = {
-      sessionID: "s2",
-      messages: [userMessage("u1"), { id: `a${step}`, role: "assistant", content: [{ type: "text", text: "working" }] }],
-    }
-    await hook(reloaded)
-    expect(reloaded.messages[0].content).toHaveLength(2)
-    expect(reloaded.messages[0].content[1].text).toContain("Replies max 6 lines")
-    expect(reloaded.messages[1].content).toHaveLength(1)
-  }
-
-  // the next user message starts clean: old injection dropped, nothing pending
   const next = { sessionID: "s2", messages: [userMessage("u1"), userMessage("u2")] }
   await hook(next)
   expect(next.messages[0].content).toHaveLength(1)
   expect(next.messages[1].content).toHaveLength(1)
 })
 
-test("a later PASS clears pending feedback from an earlier FAIL", async () => {
+test("a later PASS injects nothing more", async () => {
   const convo = conversation.map((m) => ({ ...m }))
   const { ctx, calls, events } = fakeCtx({ replies: [FAIL("old violation"), PASS], convo })
   await plugin.setup(ctx)
   idle(events, "s3")
-  await waitFor(() => calls.generated.length === 1)
+  await waitFor(() => calls.injected.length === 1)
   convo.splice(2, 0, { id: "m9", type: "assistant", time: { created: 5, completed: 6 }, content: [{ type: "text", text: "corrected" }] })
   idle(events, "s3")
   await waitFor(() => calls.generated.length === 2)
   await new Promise((r) => setTimeout(r, 50))
+  expect(calls.injected).toHaveLength(1)
   const output = { sessionID: "s3", messages: [userMessage("u9")] }
   await calls.contextHook(output)
   expect(output.messages[0].content).toHaveLength(1)
@@ -214,7 +202,7 @@ test("feedback is not consumed by a user message without real text", async () =>
   const { ctx, calls, events } = fakeCtx({ verdict: FAIL("Replies max 6 lines") })
   await plugin.setup(ctx)
   idle(events, "s7")
-  await waitFor(() => calls.generated.length === 1)
+  await waitFor(() => calls.injected.length === 1)
   const hook = calls.contextHook
 
   const filesOnly = { sessionID: "s7", messages: [userMessage("u1", [{ type: "media", media: { source: { type: "url", url: "x" } } }])] }
@@ -223,7 +211,7 @@ test("feedback is not consumed by a user message without real text", async () =>
 
   const real = { sessionID: "s7", messages: [userMessage("u2")] }
   await hook(real)
-  expect(real.messages[0].content).toHaveLength(2)
+  expect(real.messages[0].content).toHaveLength(1)
 })
 
 describe("v2 adapters", () => {

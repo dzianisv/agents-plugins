@@ -30,9 +30,10 @@ function fakeClient(opts: {
   convo?: any[]
   earlyReturn?: boolean
   hangFirstPrompt?: boolean
+  failInject?: boolean
   sessions?: any[] | Promise<any[]>
 }) {
-  const calls = { prompt: [] as any[], toast: [] as any[], deleted: [] as string[], created: [] as any[], aborted: [] as string[], listed: 0 }
+  const calls = { prompt: [] as any[], judge: [] as any[], injected: [] as any[], toast: [] as any[], deleted: [] as string[], created: [] as any[], aborted: [] as string[], listed: 0 }
   const convo = opts.convo ?? conversation
   const client: any = {
     app: { log: async () => {} },
@@ -48,10 +49,14 @@ function fakeClient(opts: {
       create: async (a: any) => (calls.created.push(a), { data: { id: "audit1" } }),
       prompt: async (a: any) => {
         calls.prompt.push(a)
+        const isJudge = a.body?.agent === "supervisor-judge"
+        if (isJudge) calls.judge.push(a)
+        else calls.injected.push(a)
         opts.onPrompt?.(calls.prompt.length)
         if (opts.hangFirstPrompt && calls.prompt.length === 1) return new Promise(() => {})
+        if (opts.failInject && !isJudge) throw new Error("inject refused")
         if (opts.earlyReturn) return { data: { info: { role: "user" }, parts: [{ type: "text", text: "TRANSCRIPT: echo of the input" }] } }
-        const reply = opts.replies?.[calls.prompt.length - 1] ?? opts.verdict ?? ""
+        const reply = opts.replies?.[calls.judge.length - 1] ?? opts.verdict ?? ""
         return { data: { parts: [{ type: "text", text: reply }] } }
       },
       delete: async (a: any) => void calls.deleted.push(a.path.id),
@@ -66,35 +71,37 @@ const waitFor = async (cond: () => boolean) => {
   for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 10))
 }
 
-test("idle audit flags a violation, toasts, and injects feedback on the next user turn", async () => {
+test("idle audit flags a violation, toasts, and injects the findings immediately", async () => {
   const verdict = JSON.stringify({ verdict: "FAIL", violations: [{ rule: "Replies max 6 lines", evidence: '#1 "12 lines"', fix: "shorten" }] })
   const { client, calls } = fakeClient({ verdict })
   const hooks: any = await Supervisor({ client } as any)
 
   await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } })
-  await waitFor(() => calls.toast.length > 0)
+  await waitFor(() => calls.toast.length > 0 && calls.injected.length > 0)
 
   expect(calls.created[0].body.parentID).toBe("s1")
-  expect(calls.prompt[0].body.model.modelID).toBe("accounts/fireworks/models/deepseek-v4p1-flash")
-  expect(calls.prompt[0].body.system).toContain("Replies max 6 lines.")
-  expect(calls.prompt[0].body.parts[0].text).toContain("[#1 ASSISTANT]")
+  expect(calls.judge[0].body.model.modelID).toBe("accounts/fireworks/models/deepseek-v4p1-flash")
+  expect(calls.judge[0].body.system).toContain("Replies max 6 lines.")
+  expect(calls.judge[0].body.parts[0].text).toContain("[#1 ASSISTANT]")
+  expect(calls.judge[0].body.agent).toBe("supervisor-judge")
   expect(calls.toast[0].body.variant).toBe("warning")
   expect(calls.deleted).toEqual(["audit1"])
-  expect(calls.prompt[0].body.agent).toBe("supervisor-judge")
+
+  expect(calls.injected[0].path.id).toBe("s1")
+  const injected = calls.injected[0].body.parts[0].text
+  expect(injected).toContain("[turn-check]")
+  expect(injected).toContain("<system-reminder>")
+  expect(injected).toContain("Replies max 6 lines")
 
   const cfg: any = { agent: { other: { mode: "primary" } } }
   await hooks.config(cfg)
   expect(cfg.agent["supervisor-judge"].permission).toEqual({ "*": "deny" })
   expect(cfg.agent.other).toEqual({ mode: "primary" })
 
+  // Delivered already, so the next user message is left alone.
   const output = { messages: [userTurn("m3", "s1")] }
   await hooks["experimental.chat.messages.transform"]({}, output)
-  expect(output.messages[0].parts[1].synthetic).toBe(true)
-  expect(output.messages[0].parts[1].text).toContain("Replies max 6 lines")
-
-  const again = { messages: [userTurn("m4", "s1")] }
-  await hooks["experimental.chat.messages.transform"]({}, again)
-  expect(again.messages[0].parts).toHaveLength(1)
+  expect(output.messages[0].parts).toHaveLength(1)
 })
 
 test("when prompt returns the user message early, the plugin waits for the assistant reply", async () => {
@@ -114,11 +121,12 @@ test("a later PASS clears feedback from an earlier FAIL that was corrected", asy
   const hooks: any = await Supervisor({ client } as any)
   const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "s7" } } })
   await idle()
-  await waitFor(() => calls.toast.length > 0)
+  await waitFor(() => calls.toast.length > 0 && calls.injected.length === 1)
   convo.push({ info: { id: "m9", role: "assistant", sessionID: "s7" }, parts: [{ type: "text", text: "corrected" }] })
   await idle()
-  await waitFor(() => calls.prompt.length === 2)
+  await waitFor(() => calls.judge.length === 2)
   await new Promise((r) => setTimeout(r, 50))
+  expect(calls.injected).toHaveLength(1)
   const output = { messages: [userTurn("u2", "s7")] }
   await hooks["experimental.chat.messages.transform"]({}, output)
   expect(output.messages[0].parts).toHaveLength(1)
@@ -189,12 +197,13 @@ test("an idle that arrives during an audit triggers a follow-up audit of the new
   expect(calls.prompt[1].body.parts[0].text).toContain("more work")
 })
 
-test("feedback is kept for a real user turn and not consumed by compaction or synthetic-only messages", async () => {
+test("the findings are injected immediately and never re-added to a user message", async () => {
   const verdict = JSON.stringify({ verdict: "FAIL", violations: [{ rule: "Replies max 6 lines", evidence: "#1", fix: "shorten" }] })
   const { client, calls } = fakeClient({ verdict })
   const hooks: any = await Supervisor({ client } as any)
   await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s8" } } })
-  await waitFor(() => calls.toast.length > 0)
+  await waitFor(() => calls.injected.length === 1)
+  expect(calls.injected[0].body.parts[0].text).toContain("Replies max 6 lines")
   const transform = hooks["experimental.chat.messages.transform"]
 
   const compaction = { messages: [userTurn("c1", "s8", [{ type: "compaction", auto: true }])] }
@@ -207,88 +216,102 @@ test("feedback is kept for a real user turn and not consumed by compaction or sy
 
   const real = { messages: [userTurn("c5", "s8")] }
   await transform({}, real)
-  expect(real.messages[0].parts).toHaveLength(2)
-  expect(real.messages[0].parts[1].text).toContain("Replies max 6 lines")
+  expect(real.messages[0].parts).toHaveLength(1)
+})
+
+test("repeated failing audits stop injecting after the per-session ceiling", async () => {
+  const verdict = JSON.stringify({ verdict: "FAIL", violations: [{ rule: "Replies max 6 lines", evidence: "#1", fix: "shorten" }] })
+  const convo = [...conversation]
+  const { client, calls } = fakeClient({ verdict, convo })
+  const hooks: any = await Supervisor({ client } as any)
+  for (let i = 0; i < 5; i++) {
+    convo.push({ info: { id: `a${i}`, role: "assistant", sessionID: "s11" }, parts: [{ type: "text", text: `round ${i}` }] })
+    await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s11" } } })
+    await new Promise((r) => setTimeout(r, 30))
+  }
+  expect(calls.injected).toHaveLength(3)
+})
+
+test("an audit error is never injected", async () => {
+  const { client, calls } = fakeClient({ verdict: "looks fine to me" })
+  const hooks: any = await Supervisor({ client } as any)
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s10" } } })
+  await waitFor(() => calls.toast.length > 0)
+  await new Promise((r) => setTimeout(r, 50))
+  expect(calls.injected).toHaveLength(0)
+})
+
+test("a refused injection keeps the note for the next user message", async () => {
+  const verdict = JSON.stringify({ verdict: "FAIL", violations: [{ rule: "Replies max 6 lines", evidence: "#1", fix: "shorten" }] })
+  const { client, calls } = fakeClient({ verdict, failInject: true })
+  const hooks: any = await Supervisor({ client } as any)
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s9" } } })
+  await waitFor(() => calls.injected.length === 1)
+  const output = { messages: [userTurn("m1", "s9")] }
+  await hooks["experimental.chat.messages.transform"]({}, output)
+  expect(output.messages[0].parts).toHaveLength(2)
+  expect(output.messages[0].parts[1].text).toContain("Replies max 6 lines")
 })
 
 describe("feedback across the steps of one turn", () => {
   const fail = (rule: string) => JSON.stringify({ verdict: "FAIL", violations: [{ rule, evidence: "#1", fix: "fix" }] })
   const assistant = (id: string, sessionID: string) => ({ info: { id, role: "assistant", sessionID }, parts: [{ type: "text", text: "working" }] })
 
-  test("is injected again on every step for the same user message, once per message object, and not on the next user message", async () => {
+  test("is injected once per audit, and again only for a new turn", async () => {
     const { client, calls } = fakeClient({ verdict: fail("Rule one") })
     const hooks: any = await Supervisor({ client } as any)
     await hooks.event({ event: { type: "session.idle", properties: { sessionID: "t1" } } })
-    await waitFor(() => calls.toast.length > 0)
-    const transform = hooks["experimental.chat.messages.transform"]
+    await waitFor(() => calls.injected.length === 1)
+    expect(calls.injected[0].body.parts[0].text).toContain("Rule one")
 
-    const step1 = { messages: [userTurn("u1", "t1")] }
-    await transform({}, step1)
-    await transform({}, step1)
-    expect(step1.messages[0].parts).toHaveLength(2)
-    expect(step1.messages[0].parts[1].id.startsWith("prt_supervisor")).toBe(true)
+    // The same last message is not audited twice, so nothing is injected again.
+    await hooks.event({ event: { type: "session.idle", properties: { sessionID: "t1" } } })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(calls.injected).toHaveLength(1)
 
-    for (let step = 2; step <= 4; step++) {
-      const reloaded = { messages: [userTurn("u1", "t1"), assistant(`a${step}`, "t1")] }
-      await transform({}, reloaded)
-      expect(reloaded.messages[0].parts).toHaveLength(2)
-      expect(reloaded.messages[0].parts[1].text).toContain("Rule one")
-    }
-
-    const next = { messages: [userTurn("u1", "t1"), assistant("a9", "t1"), userTurn("u2", "t1")] }
-    await transform({}, next)
-    expect(next.messages[2].parts).toHaveLength(1)
-    expect(next.messages[0].parts).toHaveLength(1)
-
-    const back = { messages: [userTurn("u1", "t1")] }
-    await transform({}, back)
-    expect(back.messages[0].parts).toHaveLength(1)
+    // A new assistant message is a new audit and gets its own injection.
+    const convo = (client.session as any).messages
+    ;(client.session as any).messages = async () => ({
+      data: [
+        { info: { id: "u1", role: "user", sessionID: "t1" }, parts: [{ type: "text", text: "status?" }] },
+        { info: { id: "a9", role: "assistant", sessionID: "t1" }, parts: [{ type: "text", text: "more work" }] },
+      ],
+    })
+    await hooks.event({ event: { type: "session.idle", properties: { sessionID: "t1" } } })
+    await waitFor(() => calls.injected.length === 2)
+    expect(calls.injected[1].body.parts[0].text).toContain("Rule one")
+    void convo
   })
 
-  test("a second feedback replaces the first on the next user message", async () => {
+  test("a second audit injects its own findings", async () => {
     const { client, calls } = fakeClient({ replies: [fail("Rule one"), fail("Rule two")] })
     const convo = [...conversation.map((m) => ({ ...m, info: { ...m.info, sessionID: "t2" } }))]
     const hooks: any = await Supervisor({ client } as any)
     const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "t2" } } })
     ;(client.session as any).messages = async () => ({ data: convo })
     await idle()
-    await waitFor(() => calls.toast.length === 1)
-    const transform = hooks["experimental.chat.messages.transform"]
-    const first = { messages: [userTurn("u1", "t2")] }
-    await transform({}, first)
-    expect(first.messages[0].parts[1].text).toContain("Rule one")
+    await waitFor(() => calls.injected.length === 1)
+    expect(calls.injected[0].body.parts[0].text).toContain("Rule one")
 
     convo.push({ info: { id: "m9", role: "assistant", sessionID: "t2" }, parts: [{ type: "text", text: "more" }] })
     await idle()
-    await waitFor(() => calls.toast.length === 2)
-    const second = { messages: [userTurn("u1", "t2"), assistant("a1", "t2"), userTurn("u2", "t2")] }
-    await transform({}, second)
-    expect(second.messages[2].parts).toHaveLength(2)
-    expect(second.messages[2].parts[1].text).toContain("Rule two")
-    expect(second.messages[2].parts[1].text).not.toContain("Rule one")
-    const later = { messages: [...second.messages.map((m) => ({ ...m, parts: m.parts.slice(0, 1) })), assistant("a2", "t2")] }
-    await transform({}, later)
-    expect(later.messages[2].parts).toHaveLength(2)
-    expect(later.messages[2].parts[1].text).toContain("Rule two")
+    await waitFor(() => calls.injected.length === 2)
+    expect(calls.injected[1].body.parts[0].text).toContain("Rule two")
   })
 
-  test("a PASS audit drops the stored feedback", async () => {
+  test("a PASS audit injects nothing", async () => {
     const pass = '{"verdict":"PASS","violations":[]}'
     const convo = conversation.map((m) => ({ ...m, info: { ...m.info, sessionID: "t3" } }))
     const { client, calls } = fakeClient({ replies: [fail("Rule one"), pass], convo })
     const hooks: any = await Supervisor({ client } as any)
     const idle = () => hooks.event({ event: { type: "session.idle", properties: { sessionID: "t3" } } })
     await idle()
-    await waitFor(() => calls.toast.length === 1)
-    const transform = hooks["experimental.chat.messages.transform"]
-    await transform({}, { messages: [userTurn("u1", "t3")] })
+    await waitFor(() => calls.injected.length === 1)
     convo.push({ info: { id: "m9", role: "assistant", sessionID: "t3" }, parts: [{ type: "text", text: "fixed" }] })
     await idle()
-    await waitFor(() => calls.prompt.length === 2)
+    await waitFor(() => calls.judge.length === 2)
     await new Promise((r) => setTimeout(r, 50))
-    const again = { messages: [userTurn("u1", "t3"), assistant("a1", "t3")] }
-    await transform({}, again)
-    expect(again.messages[0].parts).toHaveLength(1)
+    expect(calls.injected).toHaveLength(1)
   })
 })
 

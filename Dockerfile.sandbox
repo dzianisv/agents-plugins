@@ -1,0 +1,22 @@
+# Sandbox image for the plugin suites: a clean container with only the repo, bun, git and python.
+# The same image is run once per plugin, so each plugin is exercised in its own container with a
+# fresh HOME and no host rules, state or credentials.
+FROM oven/bun:1.3.14-debian
+
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3 && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /probe
+COPY packages /probe/packages
+COPY scripts /probe/scripts
+COPY test /probe/test
+COPY package.json /probe/package.json
+
+# A fresh HOME with no ~/.agents/AGENTS.md, so the plugins cannot read the host's rules or state.
+ENV HOME=/probe/home \
+    TASK_GH_GUARD_STATE_DIR=/probe/home/.agents/state/task-gh-guard \
+    SUPERVISOR_HOME=/probe/home/.cache/supervisor \
+    AGENTS_NOTIFY_CMD=true
+
+RUN mkdir -p /probe/home
+
+CMD ["sh", "-lc", "echo 'set a command with docker run' && exit 1"]

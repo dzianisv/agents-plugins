@@ -1,28 +1,32 @@
 // opencode v1 plugin: audit a session when it goes idle and attach the findings to the next user
 // turn. The judge is a hidden child session; everything else lives in src/core.
 import type { Plugin } from "@opencode-ai/plugin"
-import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { auditOnce, type AuditStore } from "../core/audit"
 import { pruneLog, record } from "../core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
-import { DEFAULT_MODEL } from "../core/prompt"
-import { stateDir } from "../core/state"
+import { DEFAULT_MODEL, isViolationFeedback } from "../core/prompt"
+import { composeRules, readRules } from "../core/rules"
+import { readInjectBudget, stateDir, writeInjectBudget } from "../core/state"
+import { countInWindow, mayInject, recordInjection, type Budget } from "../shared/inject-limit"
 import { notify } from "../shared/notify"
 import { toMsg } from "./messages"
 
-const DEFAULT_JUDGE_TIMEOUT_MS = 120000
+const DEFAULT_JUDGE_TIMEOUT_MS = 240000
 const AUDIT_TITLE = "supervisor audit"
 const STALE_AUDIT_MS = 5 * 60 * 1000
+/** At most this many immediate feedback injections per session per window. */
+const MAX_INJECTIONS = 3
+/** The window the injection ceiling is counted over, in seconds. */
+const INJECTION_WINDOW = 3600
 
 /** opencode v1 plugin: audit a session when it goes idle and attach the findings to the next user turn. */
-export const Supervisor: Plugin = async ({ client }) => {
+export const Supervisor: Plugin = async ({ client, directory }) => {
   if (process.env.SUPERVISOR_ENABLED === "0" || isHeadlessRun(process.argv, process.env)) return {}
 
   const spec = process.env.SUPERVISOR_MODEL ?? DEFAULT_MODEL
   const model = parseModel(spec)
-  const rulesPath = process.env.SUPERVISOR_RULES ?? join(homedir(), ".agents", "AGENTS.md")
+  const rules = () => composeRules(readRules(process.env, directory))
   const maxChars = Number(process.env.SUPERVISOR_MAX_CHARS ?? 60000)
   const judgeTimeoutMs = Number(process.env.SUPERVISOR_JUDGE_TIMEOUT ?? DEFAULT_JUDGE_TIMEOUT_MS / 1000) * 1000
 
@@ -82,6 +86,29 @@ export const Supervisor: Plugin = async ({ client }) => {
     return { text: answer.parts.flatMap((p) => (p.type === "text" ? [p.text as string] : [])).join(""), meta }
   }
 
+  /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
+  const injectFeedback = async (sessionID: string, text: string) => {
+    if (!isViolationFeedback(text)) return
+    const now = Math.floor(Date.now() / 1000)
+    // Bounded per session on disk, so a plugin reload cannot reset the ceiling and start a loop.
+    const dir = stateDir()
+    const budget = readInjectBudget(sessionID, dir)
+    if (!mayInject(budget, `${sessionID}|`, now, INJECTION_WINDOW, MAX_INJECTIONS)) {
+      log("error", `not injecting again this hour for ${sessionID}: ${MAX_INJECTIONS} findings already delivered`)
+      return
+    }
+    writeInjectBudget(sessionID, recordInjection(budget, `${sessionID}|${countInWindow(budget, `${sessionID}|`, now, INJECTION_WINDOW)}`, now), dir)
+    try {
+      await client.session.prompt({
+        path: { id: sessionID },
+        body: { parts: [{ type: "text", text: `<system-reminder>\n${text}\n</system-reminder>` }] },
+      })
+      pending.delete(sessionID)
+    } catch (err) {
+      log("error", `feedback inject failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   const audit = async (sessionID: string) => {
     const res = await client.session.messages({ path: { id: sessionID } })
     const msgs = ((res.data ?? []) as any[]).map(toMsg)
@@ -119,7 +146,10 @@ export const Supervisor: Plugin = async ({ client }) => {
       lastAudited: () => audited.get(sessionID) ?? "",
       markAudited: (messageID) => void audited.set(sessionID, messageID),
       readPending: () => pending.get(sessionID) ?? "",
-      writePending: (text) => void pending.set(sessionID, text),
+      writePending: (text) => {
+        pending.set(sessionID, text)
+        void injectFeedback(sessionID, text)
+      },
       clearPending: () => {
         pending.delete(sessionID)
         injected.delete(sessionID)
@@ -130,7 +160,7 @@ export const Supervisor: Plugin = async ({ client }) => {
       sessionID,
       msgs,
       messageID: last.info.id,
-      rules: () => readFileSync(rulesPath, "utf8"),
+      rules,
       judge,
       maxChars,
       model: spec,

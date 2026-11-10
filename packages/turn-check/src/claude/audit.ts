@@ -1,9 +1,7 @@
 #!/usr/bin/env bun
 // Detached audit child started by the Stop hook: judge the transcript with `opencode run`.
-import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
 import { auditOnce, type AuditOutcome, type Judge } from "../core/audit"
+import { composeRules, readRules, rulesPaths } from "../core/rules"
 import { record } from "../core/audit-log"
 import { cliJudge } from "../core/judge-cli"
 import { DEFAULT_MODEL } from "../core/prompt"
@@ -17,8 +15,8 @@ export const AGENT = "claude-code"
 /** The judge model spec, provider/model. */
 export const modelName = (env: Env = process.env): string => env.SUPERVISOR_MODEL || DEFAULT_MODEL
 
-/** The rules file, read fresh on every audit. */
-export const rulesPath = (env: Env = process.env): string => env.SUPERVISOR_RULES || join(homedir(), ".agents", "AGENTS.md")
+/** The rules files, read fresh on every audit: global and project AGENTS.md. */
+export const rulesPath = (env: Env = process.env, cwd = process.cwd()): string[] => rulesPaths(env, cwd)
 
 /** The agent-output cap for one audit. */
 export const maxChars = (env: Env = process.env): number => Number(env.SUPERVISOR_MAX_CHARS || 60000)
@@ -27,7 +25,7 @@ export const maxChars = (env: Env = process.env): number => Number(env.SUPERVISO
 export const settleSeconds = (env: Env = process.env): number => Number(env.SUPERVISOR_SETTLE_SECONDS || 2)
 
 /** Options for one audit attempt. */
-export type AuditSessionOptions = { env?: Env; judge?: Judge }
+export type AuditSessionOptions = { env?: Env; judge?: Judge; cwd?: string }
 
 /** Audit the newest state of one transcript once, wired to the file state and the CLI judge. */
 export async function auditSession(sessionID: string, transcriptPath: string, options: AuditSessionOptions = {}): Promise<AuditOutcome> {
@@ -46,7 +44,11 @@ export async function auditSession(sessionID: string, transcriptPath: string, op
     sessionID,
     msgs,
     messageID,
-    rules: () => readFileSync(rulesPath(env), "utf8"),
+    rules: () => {
+      const composed = composeRules(readRules(env, options.cwd ?? process.cwd()))
+      if (!composed) throw new Error(`no rules file found: ${rulesPaths(env, options.cwd ?? process.cwd()).join(", ")}`)
+      return composed
+    },
     judge: options.judge ?? cliJudge({ model, env }),
     maxChars: maxChars(env),
     model,
@@ -94,12 +96,16 @@ export async function run(sessionID: string, transcriptPath: string, options: Ru
   }
 }
 
-/** Entry point: audit.ts <session_id> <transcript_path>; waits SUPERVISOR_SETTLE_SECONDS first. */
+/** Entry point: audit.ts <session_id> <transcript_path> [cwd]; waits SUPERVISOR_SETTLE_SECONDS first. */
 export async function main(argv: string[], options: { env?: Env; once?: RunOptions["once"] } = {}): Promise<number> {
-  if (argv.length !== 3) return 0
+  if (argv.length < 3) return 0
   const env = options.env ?? process.env
+  const cwd = argv[3]
   await new Promise((resolve) => setTimeout(resolve, settleSeconds(env) * 1000))
-  await run(argv[1], argv[2], { env, once: options.once })
+  await run(argv[1], argv[2], {
+    env,
+    once: options.once ?? ((id, path) => auditSession(id, path, { env, cwd })),
+  })
   return 0
 }
 

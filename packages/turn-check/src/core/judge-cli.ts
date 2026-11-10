@@ -190,8 +190,21 @@ export type JudgeRunOptions = {
 /** A runner with the same contract as runJudge, injectable for tests. */
 export type RunJudge = (prompt: string, options: JudgeRunOptions) => Promise<string>
 
+/** Transient judge failures worth one retry: transport and socket drops from `opencode run`. */
+const TRANSIENT = /transport|socket|ECONN|EPIPE/i
+
 /** Run opencode as the judge in its own process group, send the prompt on stdin, return its reply text and delete its saved session. */
 export async function runJudge(prompt: string, options: JudgeRunOptions): Promise<string> {
+  try {
+    return await attemptJudge(prompt, options)
+  } catch (err) {
+    if (!(err instanceof JudgeError) || !TRANSIENT.test(err.message)) throw err
+    return await attemptJudge(prompt, options)
+  }
+}
+
+/** One judge subprocess attempt. */
+async function attemptJudge(prompt: string, options: JudgeRunOptions): Promise<string> {
   const workdir = mkdtempSync(join(tmpdir(), "supervisor-"))
   const env = { ...options.env, OPENCODE_CONFIG_CONTENT: JUDGE_CONFIG, SUPERVISOR_ENABLED: "0", SUPERVISOR_CHILD: "1" }
   const cmd = ["run", "--format", "json", "--title", AUDIT_TITLE, "--model", options.model]

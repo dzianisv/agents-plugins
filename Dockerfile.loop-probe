@@ -1,0 +1,21 @@
+# Isolated loop probe: a clean container with only the repo, bun, git and python, so the plugins are
+# exercised without the host's env, state or credentials.
+FROM oven/bun:1.3.14-debian
+
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3 && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /probe
+COPY packages /probe/packages
+COPY scripts /probe/scripts
+COPY test /probe/test
+COPY package.json /probe/package.json
+
+# A fresh HOME with no ~/.agents/AGENTS.md, so the plugins cannot read the host's rules or state.
+ENV HOME=/probe/home \
+    TASK_GH_GUARD_STATE_DIR=/probe/home/.agents/state/task-gh-guard \
+    SUPERVISOR_HOME=/probe/home/.cache/supervisor \
+    AGENTS_NOTIFY=0
+
+RUN mkdir -p /probe/home
+
+CMD ["sh", "-lc", "cd /probe/packages/task-gh-guard && bun test test/loop.test.ts && cd /probe/packages/turn-check && bun test test/loop.test.ts && echo 'ISOLATED LOOP PROBE: PASS'"]

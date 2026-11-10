@@ -32,6 +32,9 @@ const die = (message: string): never => {
   process.exit(1)
 }
 
+// Simulates an expired exported token: any call that still carries GH_TOKEN is rejected.
+if (process.env.FAKE_GH_BAD_TOKEN && process.env.GH_TOKEN) die("Bad credentials (HTTP 401)")
+
 if (args[0] === "api") {
   const path = args.slice(1).find((arg) => !arg.startsWith("-")) ?? ""
   const parts = path.split("/")

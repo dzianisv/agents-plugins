@@ -158,8 +158,21 @@ function judgeOutput(stdout: string): Judge {
   return { reply: texts.join("").trim(), session }
 }
 
-/** Runs the judge and returns its reply and session id; rejects with a short reason on any failure. */
-export function runJudge(prompt: string, model: string, timeout: number, env: NodeJS.ProcessEnv = process.env): Promise<Judge> {
+/** Transient judge failures worth one retry: transport and socket drops from `opencode run`. */
+const TRANSIENT = /transport|socket|ECONN|EPIPE/i
+
+/** Runs the judge, retrying once on a transient transport failure. */
+export async function runJudge(prompt: string, model: string, timeout: number, env: NodeJS.ProcessEnv = process.env): Promise<Judge> {
+  try {
+    return await attemptJudge(prompt, model, timeout, env)
+  } catch (err) {
+    if (!TRANSIENT.test(err instanceof Error ? err.message : String(err))) throw err
+    return await attemptJudge(prompt, model, timeout, env)
+  }
+}
+
+/** One judge subprocess attempt. */
+function attemptJudge(prompt: string, model: string, timeout: number, env: NodeJS.ProcessEnv): Promise<Judge> {
   return new Promise((resolve, reject) => {
     if (!which("opencode", env)) return reject(new Error("opencode is not on PATH"))
     const workdir = mkdtempSync(join(tmpdir(), "tgg-review-"))
@@ -167,9 +180,10 @@ export function runJudge(prompt: string, model: string, timeout: number, env: No
       cwd: workdir,
       env: envWithSecrets(env),
       detached: true,
-      stdio: ["pipe", "pipe", "ignore"],
+      stdio: ["pipe", "pipe", "pipe"],
     })
     let stdout = ""
+    let stderr = ""
     let settled = false
     const finish = (fn: () => void) => {
       if (settled) return
@@ -185,9 +199,16 @@ export function runJudge(prompt: string, model: string, timeout: number, env: No
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString()
     })
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
     child.on("error", (err) => finish(() => reject(err)))
     child.on("close", (code) =>
-      finish(() => (code === 0 ? resolve(judgeOutput(stdout)) : reject(new Error(`opencode exited ${code}`)))),
+      finish(() =>
+        code === 0
+          ? resolve(judgeOutput(stdout))
+          : reject(new Error(`opencode exited ${code}: ${stderr.trim().slice(0, 200) || "no stderr"}`)),
+      ),
     )
     child.stdin?.end(prompt)
   })
@@ -225,14 +246,20 @@ export async function reviewCommand(command: string, env: NodeJS.ProcessEnv = pr
   return verdict.reason.startsWith("rule review skipped") ? verdict.reason : null
 }
 
+/** True when the cwd is a judge temp dir, i.e. the review is running inside the judge's own session. */
+function isJudgeDir(dir: string): boolean {
+  return dir.startsWith(join(tmpdir(), "tgg-review-"))
+}
+
 /** Reviews one command; a broken review fails open with a `rule review skipped` reason. */
-export async function check(command: string, env: NodeJS.ProcessEnv = process.env): Promise<Review> {
+export async function check(command: string, env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): Promise<Review> {
   try {
     ensureConfig(env)
   } catch (err) {
     return { decision: "skip", reason: `rule review skipped: ${err instanceof Error ? err.message : String(err)}` }
   }
-  if (env.TASK_GH_GUARD_CHILD === "1" || env.TASK_GH_GUARD_REVIEW === "0") {
+  // The child flag only silences the judge's own session; a leaked flag must not disable reviews elsewhere.
+  if ((env.TASK_GH_GUARD_CHILD === "1" && isJudgeDir(cwd)) || env.TASK_GH_GUARD_REVIEW === "0") {
     return { decision: "skip", reason: "review disabled" }
   }
   if (!needsReview(command)) return { decision: "skip", reason: "not a git write" }
@@ -243,7 +270,7 @@ export async function check(command: string, env: NodeJS.ProcessEnv = process.en
   const entry = { at: Math.floor(started), model, command: command.slice(0, 300) }
   let verdict: { decision: "allow" | "deny"; reason: string }
   try {
-    const raw = env.TASK_GH_GUARD_REVIEW_TIMEOUT ?? "60"
+    const raw = env.TASK_GH_GUARD_REVIEW_TIMEOUT ?? "120"
     const timeout = Number(raw)
     if (!Number.isFinite(timeout)) throw new Error(`invalid TASK_GH_GUARD_REVIEW_TIMEOUT: ${raw}`)
     const { reply, session } = await runJudge(promptFor(rules, command), model, timeout, env)

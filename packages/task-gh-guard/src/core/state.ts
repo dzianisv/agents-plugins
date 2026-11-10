@@ -1,5 +1,6 @@
 // State files and block-window bookkeeping for task-gh-guard.
 import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { countInWindow } from "../shared/inject-limit"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 
@@ -102,10 +103,34 @@ export function blockWindow(env: NodeJS.ProcessEnv = process.env): number {
   return Math.max(0, Number.parseInt(raw, 10))
 }
 
+// The block budget lives in its own file, next to the state file but never deleted with it: the gate
+// removes the state file when every recorded commit passes, and a budget stored there would reset and
+// re-arm the block on the next push (that is the loop this file exists to prevent).
+const budgetPathFor = (path: string): string => join(dirname(path), "budget", basename(path))
+
+/** The recorded blocks for a session, keyed by repo|branch@sha7. */
+export function readBudget(path: string): Record<string, { at: number }> {
+  try {
+    const data = JSON.parse(readFileSync(budgetPathFor(path), "utf8")) as unknown
+    return data && typeof data === "object" ? (data as Record<string, { at: number }>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Replaces the recorded blocks for a session. */
+export function writeBudget(path: string, budget: Record<string, { at: number }>): void {
+  const file = budgetPathFor(path)
+  const parent = dirname(file)
+  mkdirSync(parent, { recursive: true })
+  chmodSync(parent, 0o700)
+  writeFileSync(file, `${JSON.stringify(budget, null, 2)}\n`, { mode: 0o600 })
+}
+
 /** True when every given commit blocked a stop within the window. */
 export function reported(path: string, entries: ReportEntry[], now: number, window: number): boolean {
   if (!entries.length || window <= 0) return false
-  const seen = readState(path).reported
+  const seen = readBudget(path)
   if (!seen || typeof seen !== "object") return false
   for (const entry of entries) {
     const at = seen[reportKey(entry)]?.at
@@ -114,12 +139,21 @@ export function reported(path: string, entries: ReportEntry[], now: number, wind
   return true
 }
 
+/** Blocks allowed per branch inside one window (default 3), so a new commit cannot re-arm forever. */
+export function maxBlocks(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.TASK_GH_GUARD_MAX_BLOCKS ?? "").trim()
+  if (!/^\+?\d+$/.test(raw)) return 3
+  return Number.parseInt(raw, 10)
+}
+
+/** How many stops this branch already blocked inside the window, across every sha. */
+export function blocksInWindow(path: string, entry: ReportEntry, now: number, window: number): number {
+  return countInWindow(readBudget(path), `${repoKey(entry)}|${entry.branch ?? "?"}@`, now, window)
+}
+
 /** Marks every given commit as reported at `now`. */
 export function markReported(path: string, entries: ReportEntry[], now: number): void {
-  const data = readState(path)
-  const seen = data.reported && typeof data.reported === "object" ? data.reported : {}
+  const seen = readBudget(path)
   for (const entry of entries) seen[reportKey(entry)] = { at: now }
-  data.reported = seen
-  data.updated_at = now
-  writeState(path, data)
+  writeBudget(path, seen)
 }

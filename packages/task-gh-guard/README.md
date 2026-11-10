@@ -49,10 +49,12 @@ bin/git-rules-review check --command "gh api graphql -f query='mutation { resolv
 
 ## CI gate rules
 
-1. **No push, no check.** Only a successful push in this session arms the guard. A session that only
-   reads code never runs git or `gh` at stop time.
-2. **Record exact SHAs.** After `git push`, `gh stack push|submit|link`, or `git-sign-batch` (without
-   `--dry-run`/`--no-push`), record the pushed branch and its SHA, but only when
+1. **No push or GitHub post, no check.** Only a push or a GitHub write (`gh pr|issue|release` post, a
+   writing `gh api`) in this session arms the guard. A session that only reads code never runs git or
+   `gh` at stop time. A post records the current branch when `refs/heads/<branch>` equals
+   `refs/remotes/origin/<branch>`.
+2. **Record exact SHAs.** After `git push`, `gh stack push|submit|link`, `git-sign-batch` (without
+   `--dry-run`/`--no-push`), or a GitHub write command, record the branch and its SHA, but only when
    `refs/heads/<branch>` equals `refs/remotes/origin/<branch>`. No fetch.
 3. **Check only those commits.** Read check runs and statuses per recorded SHA, not per PR head. A newer
    commit from someone else on the branch does not change the verdict. A recorded commit the branch no
@@ -63,8 +65,31 @@ bin/git-rules-review check --command "gh api graphql -f query='mutation { resolv
    (`TASK_GH_GUARD_BLOCK_WINDOW`, default 3600 seconds), so a new commit still blocks while the same
    commit cannot loop. Pending says "CI pending on `<branch>@<sha7>`". State survives so a later turn
    checks again. opencode nudges at most once for pending and three times for a failure per SHA set.
+   Every nudge and every stop block starts with `[task-gh-guard]`, so the source is obvious.
+6. **Per-branch ceiling.** A branch may block at most `TASK_GH_GUARD_MAX_BLOCKS` times inside one
+   window (default 3), counted across every sha, because a new commit re-arms the per-commit budget and
+   an agent that keeps amending would otherwise be blocked on every turn. Past the ceiling the guard
+   sends one desktop notification and stops blocking until the window passes. The ceiling is the shared
+   one in `packages/shared/src/inject-limit.ts`; the rules behind it are in AGENTS.md, "Plugin loop
+   safety".
 
 State lives in `~/.agents/state/task-gh-guard/<runtime>-<session_id>.json`.
+
+A `gh` call that returns `Bad credentials` (an exported `GH_TOKEN` that has expired) is retried once
+with `GH_TOKEN` and `GITHUB_TOKEN` removed, so gh's own keyring auth is used and a stale token cannot
+wedge a session. The judge subprocess retries once on a transport or socket drop.
+
+Claude Code also runs `src/claude/session-end.ts`: when a session ends with CI still red or pending, it
+sends a desktop notification, so an interrupted or abandoned turn is not silent. opencode has no
+session-end event; its nudge is the equivalent.
+
+## Plugin hygiene
+
+`scripts/plugin-hygiene.ts` scans every package source for the failure classes we have hit, and
+`test/plugin-hygiene.test.ts` fails the build when one comes back: a `*_CHILD` env marker that
+disables a plugin outside its own judge directory, a `gh` call without the stale-token fallback, a
+judge subprocess without a transient retry, and a judge or review timeout below 120 seconds. CI runs
+it in the root test job and runs both packages with `bun test` in the `Plugin packages (bun)` job.
 
 ## Install
 

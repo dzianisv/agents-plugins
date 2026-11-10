@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { utimesSync } from "node:fs"
 import { main as promptMain } from "../src/claude/prompt"
 import { main as sessionEndMain } from "../src/claude/session-end"
-import { main as stopMain, type SpawnFn } from "../src/claude/stop"
-import { formatFeedback } from "../src/core/prompt"
+import { main as stopMain, inlineTimeoutSeconds } from "../src/claude/stop"
+import { ERROR_PREFIX, formatFeedback } from "../src/core/prompt"
 import { auditedPath, lockPath, markAudited, pendingPath, rerunPath, safeSessionId, LOCK_STALE_SECONDS, writePending } from "../src/core/state"
-import { FAIL_REPLY, makeEnv, type TestEnv } from "./helpers"
+import { assistant, FAIL_REPLY, makeEnv, text, user, writeTranscript, type TestEnv } from "./helpers"
 
 let env: TestEnv
 beforeEach(() => {
@@ -24,77 +25,127 @@ const payload = (extra: Record<string, unknown> = {}) => ({
 })
 
 describe("stop hook", () => {
-  test("spawns a detached child and prints nothing", () => {
+  test("blocks the stop with the findings from this turn", () => {
+    const result = env.runHook("stop.ts", payload(), { FAKE_REPLY: FAIL_REPLY })
+    expect([result.status, result.stderr]).toEqual([0, ""])
+    const out = JSON.parse(result.stdout)
+    expect(out.decision).toBe("block")
+    expect(out.reason).toContain("[turn-check]")
+    expect(out.reason).toContain("Max 6 lines")
+    expect(existsSync(pendingPath("s1"))).toBe(false)
+    expect(env.audits()[0].verdict).toBe("FAIL")
+  })
+
+  test("passes when the audit finds nothing", () => {
+    const result = env.runHook("stop.ts", payload())
+    expect([result.status, result.stdout]).toEqual([0, ""])
+    expect(env.audits()[0].verdict).toBe("PASS")
+  })
+
+  test("keeps an audit error for the next prompt instead of blocking", () => {
+    const result = env.runHook("stop.ts", payload(), { FAKE_MODE: "exit2" })
+    expect([result.status, result.stdout]).toEqual([0, ""])
+    expect(readFileSync(pendingPath("s1"), "utf8")).toContain("turn-check ERROR:")
+  })
+
+  test("a slow judge falls back to the detached child instead of blocking", async () => {
     const calls: Array<{ command: string; args: string[]; options: { detached: boolean; stdio: "ignore" } }> = []
-    const spawn: SpawnFn = (command, args, options) => {
+    const spawnFn = (command: string, args: string[], options: any) => {
       calls.push({ command, args, options })
       return { unref: () => {} }
     }
-    const code = stopMain(JSON.stringify(payload()), { env: process.env, spawn })
+    const once = async (id: string) => {
+      writePending(id, `${ERROR_PREFIX} the audit of your last turn failed (judge timed out after 1s)`)
+      return "error" as const
+    }
+    const code = await stopMain(JSON.stringify(payload()), { env: process.env, once, spawn: spawnFn })
     expect(code).toBe(0)
     expect(calls).toHaveLength(1)
     expect(calls[0].args[0].endsWith(join("src", "claude", "audit.ts"))).toBe(true)
-    expect(calls[0].args.slice(1)).toEqual(["s1", env.transcript])
+    expect(calls[0].args.slice(1, 3)).toEqual(["s1", env.transcript])
+    expect(calls[0].args[3]).toBe(process.cwd())
     expect(calls[0].options.detached).toBe(true)
     expect(calls[0].options.stdio).toBe("ignore")
+    expect(readFileSync(pendingPath("s1"), "utf8")).toContain("turn-check ERROR:")
+  })
+
+  test("the project AGENTS.md is judged alongside the global one", () => {
+    const project = mkdtempSync(join(tmpdir(), "tc-project-"))
+    writeFileSync(join(project, "AGENTS.md"), "PROJECT RULE: always cite the file")
+    const result = env.runHook("stop.ts", payload({ cwd: project }), { SUPERVISOR_RULES: "", FAKE_REPLY: FAIL_REPLY })
+    expect([result.status, result.stderr]).toEqual([0, ""])
+    const sent = env.calls()[0].stdin
+    expect(sent).toContain("PROJECT RULE: always cite the file")
+    expect(sent).toContain(`# Rules from ${join(project, "AGENTS.md")}`)
+    expect(sent).toContain("# Rules from ") // the global file is included too
+    rmSync(project, { recursive: true, force: true })
+  })
+
+  test("stops blocking after the per-session ceiling", () => {
+    const extra = { FAKE_REPLY: FAIL_REPLY }
+    const outs: string[] = []
+    for (let i = 0; i < 5; i++) {
+      writeTranscript(env.transcript, [user("fix it", "u1"), assistant([text("done")], `a${i}`)])
+      outs.push(String(env.runHook("stop.ts", payload(), extra).stdout).trim())
+    }
+    expect(outs.filter((out) => out.includes("block"))).toHaveLength(3)
+    expect(outs[4]).toBe("")
+  })
+
+  test("the ceiling holds even when the state file is cleared between turns", () => {
+    const extra = { FAKE_REPLY: FAIL_REPLY }
+    const outs: string[] = []
+    for (let i = 0; i < 5; i++) {
+      writeTranscript(env.transcript, [user("fix it", "u1"), assistant([text("done")], `a${i}`)])
+      outs.push(String(env.runHook("stop.ts", payload(), extra).stdout).trim())
+      // The audited marker and the pending note are cleared as the turn progresses; the ceiling,
+      // which lives in its own file, must survive that or the block would re-arm every turn.
+      rmSync(join(env.home, "state", "s1.json"), { force: true })
+      rmSync(join(env.home, "pending", "s1.txt"), { force: true })
+    }
+    expect(outs.filter((out) => out.includes("block"))).toHaveLength(3)
+    expect(outs[4]).toBe("")
+  })
+
+  test("the inline wait defaults to 90 seconds", () => {
+    expect(inlineTimeoutSeconds({})).toBe(90)
+    expect(inlineTimeoutSeconds({ SUPERVISOR_INLINE_TIMEOUT: "30" })).toBe(30)
+    expect(inlineTimeoutSeconds({ SUPERVISOR_INLINE_TIMEOUT: "nope" })).toBe(90)
   })
 
   test("the guards skip the audit", () => {
+    const judgeCwd = mkdtempSync(join(tmpdir(), "supervisor-judge-"))
     const cases: Array<[string, Record<string, string>, unknown]> = [
       ["disabled", { SUPERVISOR_ENABLED: "0" }, payload()],
-      ["child env", { SUPERVISOR_CHILD: "1" }, payload()],
+      ["child env", { SUPERVISOR_CHILD: "1" }, payload({ cwd: judgeCwd })],
       ["stop_hook_active", {}, payload({ stop_hook_active: true })],
       ["missing transcript", {}, payload({ transcript_path: join(env.home, "none.jsonl") })],
       ["no transcript path", {}, { session_id: "s1" }],
     ]
     for (const [name, overrides, input] of cases) {
-      const calls: unknown[] = []
-      const spawn: SpawnFn = (command, args, options) => {
-        calls.push({ command, args, options })
-        return { unref: () => {} }
-      }
-      const code = stopMain(JSON.stringify(input), { env: { ...process.env, ...overrides }, spawn })
-      expect([name, code, calls.length]).toEqual([name, 0, 0])
+      const result = env.runHook("stop.ts", input, overrides)
+      expect([name, result.status, result.stdout]).toEqual([name, 0, ""])
     }
+    rmSync(judgeCwd, { recursive: true, force: true })
+    expect(env.calls()).toEqual([])
+  })
+
+  test("a leaked child flag outside a judge dir still audits", () => {
+    const result = env.runHook("stop.ts", payload(), { SUPERVISOR_CHILD: "1", FAKE_REPLY: FAIL_REPLY })
+    expect(JSON.parse(result.stdout).decision).toBe("block")
   })
 
   test("bad stdin exits zero", () => {
-    const calls: unknown[] = []
-    const spawn: SpawnFn = () => {
-      calls.push(1)
-      return { unref: () => {} }
-    }
-    expect(stopMain("not json", { env: process.env, spawn })).toBe(0)
-    expect(calls).toEqual([])
-  })
-
-  test("the script returns at once and the child finishes the audit", async () => {
-    process.env.FAKE_REPLY = FAIL_REPLY
-    const started = Date.now()
-    const result = env.runHook("stop.ts", payload())
-    expect(Date.now() - started).toBeLessThan(5000)
-    expect([result.status, result.stdout, result.stderr]).toEqual([0, "", ""])
-    expect(await env.waitFor(() => existsSync(pendingPath("s1")))).toBe(true)
-    expect(await env.waitFor(() => !existsSync(lockPath("s1")))).toBe(true)
-    expect(env.audits()[0].verdict).toBe("FAIL")
-  })
-
-  test("the script with disabled env does nothing", async () => {
-    const result = env.runHook("stop.ts", payload(), { SUPERVISOR_ENABLED: "0" })
+    const result = env.runHook("stop.ts", "not json")
     expect([result.status, result.stdout]).toEqual([0, ""])
-    await new Promise((r) => setTimeout(r, 500))
     expect(env.calls()).toEqual([])
-    expect(existsSync(join(env.home, "audits.jsonl"))).toBe(false)
   })
 
-  test("the whole flow delivers once from stop to the next prompt", async () => {
-    process.env.FAKE_REPLY = FAIL_REPLY
-    env.runHook("stop.ts", payload())
-    expect(await env.waitFor(() => existsSync(pendingPath("s1")))).toBe(true)
+  test("the whole flow delivers once from stop to the next prompt", () => {
+    env.runHook("stop.ts", payload(), { FAKE_REPLY: FAIL_REPLY })
     const first = env.runHook("prompt.ts", { session_id: "s1", prompt: "next", hook_event_name: "UserPromptSubmit" })
     const second = env.runHook("prompt.ts", { session_id: "s1", prompt: "next", hook_event_name: "UserPromptSubmit" })
-    expect(first.status).toBe(0)
-    expect(JSON.parse(first.stdout).hookSpecificOutput.additionalContext).toContain("Max 6 lines")
+    expect([first.status, first.stdout]).toEqual([0, ""])
     expect([second.status, second.stdout]).toEqual([0, ""])
   })
 })
@@ -237,11 +288,13 @@ describe("hooks file and manifest", () => {
       expect(command).toBe(expected)
       expect(existsSync(join(root, "src", "claude", script))).toBe(true)
     }
+    // The Stop hook audits inline within SUPERVISOR_INLINE_TIMEOUT, so its timeout has to cover that.
+    expect(hooks.Stop[0].hooks[0].timeout).toBe(150)
   })
 
   test("the plugin manifest names turn-check", () => {
     const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))
-    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.0"])
+    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.7"])
     expect(manifest.author).toEqual({ name: "Dzianis Vashchuk" })
   })
 })

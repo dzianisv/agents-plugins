@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Stand-in for the opencode CLI used by the judge tests. Modes via FAKE_MODE: reply (default),
 // hang, exit2, garbage, error. Sessions are kept in FAKE_SESSIONS; every call is appended to FAKE_LOG.
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { realpathSync } from "node:fs"
 
 const args = process.argv.slice(2)
@@ -54,6 +54,15 @@ if (mode === "hang") {
 } else if (mode === "exit2") {
   process.stderr.write("unknown flag --bogus\n")
   process.exit(2)
+} else if (mode === "transport-once") {
+  const once = process.env.FAKE_ONCE_FILE
+  if (once && !existsSync(once)) {
+    writeFileSync(once, "1")
+    process.stderr.write('Transport: The socket connection was closed unexpectedly. For more information, see the log.\n')
+    process.exit(1)
+  }
+  const reply = process.env.FAKE_REPLY ?? ""
+  console.log(JSON.stringify({ type: "text", ...ids, part: { type: "text", text: reply } }))
 } else if (mode === "garbage") {
   console.log("this is not json at all ".repeat(30))
 } else if (mode === "error") {

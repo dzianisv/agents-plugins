@@ -3,7 +3,7 @@
 import { existsSync } from "node:fs"
 import { stopReason } from "../core/feedback"
 import { gate, type Gate } from "../core/gate"
-import { blockWindow, blocksInWindow, markReported, maxBlocks, reported, statePath } from "../core/state"
+import { markReported, reported, statePath } from "../core/state"
 import { notify } from "../shared/notify"
 import { readHookInput, sessionID } from "./input"
 
@@ -25,16 +25,13 @@ try {
           }
         }
         if (!data.stop_hook_active) {
-          const now = Math.floor(Date.now() / 1000)
-          const window = blockWindow()
           const failing = result.entries.filter((entry) => entry.status !== "pass")
-          const capped = failing.every((entry) => blocksInWindow(state, entry, now, window) >= maxBlocks())
-          if (capped) {
-            // A branch that keeps failing with new commits must not nag forever: notify once, stop blocking.
+          if (reported(state, failing)) {
+            // Already delivered for this commit: a later stop on the same red commit only notifies.
             const labels = failing.map((entry) => `${entry.branch}@${entry.sha.slice(0, 7)}`).join(", ")
-            await notify("task-gh-guard", `CI still red on ${labels} after ${maxBlocks()} blocks this hour; not blocking again until the window passes.`)
-          } else if (!reported(state, failing, now, window)) {
-            markReported(state, failing, now)
+            await notify("task-gh-guard", `CI still red on ${labels}; already reported, not blocking again.`)
+          } else {
+            markReported(state, failing, Math.floor(Date.now() / 1000))
             console.log(JSON.stringify({ decision: "block", reason: stopReason(result) }))
           }
         }

@@ -207,6 +207,22 @@ export function writeInjectBudget(sessionID: unknown, budget: Budget, dir = stat
   writeAtomic(sessionFile("inject", sessionID, ".json", dir), JSON.stringify(budget))
 }
 
+/** Violation rules already delivered to a session, so the same one is never sent twice. */
+export function readDelivered(sessionID: unknown, dir = stateDir()): string[] {
+  try {
+    const data = JSON.parse(readFileSync(sessionFile("delivered", sessionID, ".json", dir), "utf8")) as unknown
+    return Array.isArray(data) ? data.filter((item): item is string => typeof item === "string") : []
+  } catch {
+    return []
+  }
+}
+
+/** Records violation rules delivered to a session. */
+export function writeDelivered(sessionID: unknown, rules: string[], dir = stateDir()): void {
+  ensureDir(dir)
+  writeAtomic(sessionFile("delivered", sessionID, ".json", dir), JSON.stringify([...new Set(rules)]))
+}
+
 /** Delete a session's lock, rerun and state files when no live audit owns the lock, then prune week-old leftovers. */
 export function cleanupSession(sessionID: unknown, dir = stateDir(), now = Date.now()): void {
   const lock = lockPath(sessionID, dir)

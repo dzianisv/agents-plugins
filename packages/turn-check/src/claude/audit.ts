@@ -5,7 +5,7 @@ import { composeRules, readRules, rulesPaths } from "../core/rules"
 import { record } from "../core/audit-log"
 import { cliJudge } from "../core/judge-cli"
 import { DEFAULT_MODEL } from "../core/prompt"
-import { acquireLock, clearPending, lastAudited, markAudited, readPending, releaseLock, setRerun, stateDir, takeRerun, writePending, type Env } from "../core/state"
+import { acquireLock, clearPending, lastAudited, markAudited, readDelivered, readPending, releaseLock, setRerun, stateDir, takeRerun, writeDelivered, writePending, type Env } from "../core/state"
 import { buildMessages, lastEntryUuid, loadEntries, type ClaudeEntry } from "../core/transcript-claude"
 import { notify } from "../shared/notify"
 
@@ -59,6 +59,8 @@ export async function auditSession(sessionID: string, transcriptPath: string, op
       readPending: () => readPending(sessionID, dir),
       writePending: (text) => writePending(sessionID, text, dir),
       clearPending: () => clearPending(sessionID, dir),
+      deliveredRules: () => readDelivered(sessionID, dir),
+      markDeliveredRules: (rules) => writeDelivered(sessionID, [...readDelivered(sessionID, dir), ...rules], dir),
     },
     record: (entry) => record(dir, entry),
     notify: async (message) => {

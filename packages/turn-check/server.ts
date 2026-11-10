@@ -7,7 +7,7 @@ import { pruneLog, record } from "./src/core/audit-log"
 import { parseModel } from "./src/core/opencode"
 import { DEFAULT_MODEL, isViolationFeedback, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
 import { composeRules, readRules } from "./src/core/rules"
-import { readInjectBudget, stateDir, writeInjectBudget } from "./src/core/state"
+import { readDelivered, readInjectBudget, stateDir, writeDelivered, writeInjectBudget } from "./src/core/state"
 import { countInWindow, mayInject, recordInjection, type Budget } from "./src/shared/inject-limit"
 import { notify } from "./src/shared/notify"
 
@@ -160,6 +160,8 @@ export default {
           pending.delete(sessionID)
           injected.delete(sessionID)
         },
+        deliveredRules: () => readDelivered(sessionID, stateDir()),
+        markDeliveredRules: (rules) => writeDelivered(sessionID, [...readDelivered(sessionID, stateDir()), ...rules], stateDir()),
       }
       await auditOnce({
         sessionID,

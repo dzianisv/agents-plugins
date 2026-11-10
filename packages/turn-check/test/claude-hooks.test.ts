@@ -81,29 +81,29 @@ describe("stop hook", () => {
     rmSync(project, { recursive: true, force: true })
   })
 
-  test("stops blocking after the per-session ceiling", () => {
+  test("never blocks twice for the same violations", () => {
     const extra = { FAKE_REPLY: FAIL_REPLY }
     const outs: string[] = []
     for (let i = 0; i < 5; i++) {
       writeTranscript(env.transcript, [user("fix it", "u1"), assistant([text("done")], `a${i}`)])
       outs.push(String(env.runHook("stop.ts", payload(), extra).stdout).trim())
     }
-    expect(outs.filter((out) => out.includes("block"))).toHaveLength(3)
+    expect(outs.filter((out) => out.includes("block"))).toHaveLength(1)
     expect(outs[4]).toBe("")
   })
 
-  test("the ceiling holds even when the state file is cleared between turns", () => {
+  test("the block never re-fires when the state file is cleared between turns", () => {
     const extra = { FAKE_REPLY: FAIL_REPLY }
     const outs: string[] = []
     for (let i = 0; i < 5; i++) {
       writeTranscript(env.transcript, [user("fix it", "u1"), assistant([text("done")], `a${i}`)])
       outs.push(String(env.runHook("stop.ts", payload(), extra).stdout).trim())
-      // The audited marker and the pending note are cleared as the turn progresses; the ceiling,
-      // which lives in its own file, must survive that or the block would re-arm every turn.
+      // The audited marker and the pending note are cleared as the turn progresses; the delivered
+      // record, which lives in its own file, must survive that or the block would re-fire every turn.
       rmSync(join(env.home, "state", "s1.json"), { force: true })
       rmSync(join(env.home, "pending", "s1.txt"), { force: true })
     }
-    expect(outs.filter((out) => out.includes("block"))).toHaveLength(3)
+    expect(outs.filter((out) => out.includes("block"))).toHaveLength(1)
     expect(outs[4]).toBe("")
   })
 
@@ -294,7 +294,7 @@ describe("hooks file and manifest", () => {
 
   test("the plugin manifest names turn-check", () => {
     const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))
-    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.7"])
+    expect([manifest.name, manifest.version]).toEqual(["turn-check", "0.7.8"])
     expect(manifest.author).toEqual({ name: "Dzianis Vashchuk" })
   })
 })

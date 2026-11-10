@@ -1,7 +1,7 @@
 // The one audit pipeline both runtimes share: skip unchanged turns, build the prompt, call the
 // runtime's judge, record the verdict, mark the message audited only on a valid verdict, and leave
 // either the feedback note or a loud error note for the next prompt.
-import { buildPrompt, ERROR_PREFIX, formatError, formatFeedback, hasAgentWork, parseVerdict, type Msg, type Verdict } from "./prompt"
+import { buildPrompt, currentTurn, ERROR_PREFIX, formatError, formatFeedback, hasAgentWork, parseVerdict, type Msg, type Verdict } from "./prompt"
 
 /** What one audit attempt did. */
 export type AuditOutcome = "skipped" | "pass" | "fail" | "error"
@@ -14,6 +14,9 @@ export type AuditStore = {
   readPending: () => string
   writePending: (text: string) => void
   clearPending: () => void
+  /** Violation rules already delivered to this session, so none is ever sent twice. */
+  deliveredRules?: () => string[]
+  markDeliveredRules?: (rules: string[]) => void
 }
 /** Everything one audit attempt needs; paths, clock and transports are injected so tests need no mocks. */
 export type AuditOptions = {
@@ -61,7 +64,7 @@ export async function auditOnce(options: AuditOptions): Promise<AuditOutcome> {
     return fail(`rules unreadable: ${errorText(err)}`)
   }
 
-  const built = buildPrompt(rules, options.msgs, options.maxChars)
+  const built = buildPrompt(rules, currentTurn(options.msgs), options.maxChars)
   let reply: string
   try {
     reply = await options.judge(built.system, built.transcript)
@@ -81,7 +84,15 @@ export async function auditOnce(options: AuditOptions): Promise<AuditOutcome> {
     options.store.clearPending()
     return "pass"
   }
-  options.store.writePending(formatFeedback(verdict.violations))
-  await options.notifyFeedback?.(`${verdict.violations.length} rule violation(s): ${verdict.violations.map((v) => v.rule).join("; ")}`)
+  // Never re-send a violation already delivered: a rule the agent has been told about once is done.
+  const already = new Set(options.store.deliveredRules?.() ?? [])
+  const fresh = verdict.violations.filter((violation) => !already.has(violation.rule))
+  if (!fresh.length) {
+    options.store.clearPending()
+    return "pass"
+  }
+  options.store.markDeliveredRules?.(fresh.map((violation) => violation.rule))
+  options.store.writePending(formatFeedback(fresh))
+  await options.notifyFeedback?.(`${fresh.length} rule violation(s): ${fresh.map((v) => v.rule).join("; ")}`)
   return "fail"
 }

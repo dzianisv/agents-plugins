@@ -7,7 +7,7 @@ import { pruneLog, record } from "../core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
 import { DEFAULT_MODEL, isViolationFeedback } from "../core/prompt"
 import { composeRules, readRules } from "../core/rules"
-import { readInjectBudget, stateDir, writeInjectBudget } from "../core/state"
+import { readDelivered, readInjectBudget, stateDir, writeDelivered, writeInjectBudget } from "../core/state"
 import { countInWindow, mayInject, recordInjection, type Budget } from "../shared/inject-limit"
 import { notify } from "../shared/notify"
 import { toMsg } from "./messages"
@@ -154,6 +154,8 @@ export const Supervisor: Plugin = async ({ client, directory }) => {
         pending.delete(sessionID)
         injected.delete(sessionID)
       },
+      deliveredRules: () => readDelivered(sessionID, stateDir()),
+      markDeliveredRules: (rules) => writeDelivered(sessionID, [...readDelivered(sessionID, stateDir()), ...rules], stateDir()),
     }
 
     await auditOnce({

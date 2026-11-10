@@ -219,7 +219,7 @@ test("the findings are injected immediately and never re-added to a user message
   expect(real.messages[0].parts).toHaveLength(1)
 })
 
-test("repeated failing audits stop injecting after the per-session ceiling", async () => {
+test("repeated failing audits never inject the same violation twice", async () => {
   const verdict = JSON.stringify({ verdict: "FAIL", violations: [{ rule: "Replies max 6 lines", evidence: "#1", fix: "shorten" }] })
   const convo = [...conversation]
   const { client, calls } = fakeClient({ verdict, convo })
@@ -229,7 +229,24 @@ test("repeated failing audits stop injecting after the per-session ceiling", asy
     await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s11" } } })
     await new Promise((r) => setTimeout(r, 30))
   }
-  expect(calls.injected).toHaveLength(3)
+  expect(calls.injected).toHaveLength(1)
+})
+
+test("only the newest turn reaches the judge, so old work is never re-flagged", async () => {
+  const verdict = JSON.stringify({ verdict: "PASS", violations: [] })
+  const convo = [
+    { info: { id: "u1", role: "user", sessionID: "s12" }, parts: [{ type: "text", text: "OLD-REQUEST" }] },
+    { info: { id: "a1", role: "assistant", sessionID: "s12" }, parts: [{ type: "text", text: "OLD-ANSWER" }] },
+    { info: { id: "u2", role: "user", sessionID: "s12" }, parts: [{ type: "text", text: "NEW-REQUEST" }] },
+    { info: { id: "a2", role: "assistant", sessionID: "s12" }, parts: [{ type: "text", text: "NEW-ANSWER" }] },
+  ]
+  const { client, calls } = fakeClient({ verdict, convo })
+  const hooks: any = await Supervisor({ client } as any)
+  await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s12" } } })
+  await waitFor(() => calls.judge.length === 1)
+  const transcript = calls.judge[0].body.parts[0].text
+  expect(transcript).toContain("NEW-ANSWER")
+  expect(transcript).not.toContain("OLD-ANSWER")
 })
 
 test("an audit error is never injected", async () => {
@@ -257,7 +274,7 @@ describe("feedback across the steps of one turn", () => {
   const fail = (rule: string) => JSON.stringify({ verdict: "FAIL", violations: [{ rule, evidence: "#1", fix: "fix" }] })
   const assistant = (id: string, sessionID: string) => ({ info: { id, role: "assistant", sessionID }, parts: [{ type: "text", text: "working" }] })
 
-  test("is injected once per audit, and again only for a new turn", async () => {
+  test("injects each violation once, and never repeats it on a later turn", async () => {
     const { client, calls } = fakeClient({ verdict: fail("Rule one") })
     const hooks: any = await Supervisor({ client } as any)
     await hooks.event({ event: { type: "session.idle", properties: { sessionID: "t1" } } })
@@ -269,8 +286,7 @@ describe("feedback across the steps of one turn", () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(calls.injected).toHaveLength(1)
 
-    // A new assistant message is a new audit and gets its own injection.
-    const convo = (client.session as any).messages
+    // A new turn that repeats the same violation is not told about it again either.
     ;(client.session as any).messages = async () => ({
       data: [
         { info: { id: "u1", role: "user", sessionID: "t1" }, parts: [{ type: "text", text: "status?" }] },
@@ -278,9 +294,8 @@ describe("feedback across the steps of one turn", () => {
       ],
     })
     await hooks.event({ event: { type: "session.idle", properties: { sessionID: "t1" } } })
-    await waitFor(() => calls.injected.length === 2)
-    expect(calls.injected[1].body.parts[0].text).toContain("Rule one")
-    void convo
+    await new Promise((r) => setTimeout(r, 80))
+    expect(calls.injected).toHaveLength(1)
   })
 
   test("a second audit injects its own findings", async () => {

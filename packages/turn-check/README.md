@@ -9,9 +9,10 @@ plugin prompts the session with a `<system-reminder>` as soon as the audit retur
 with `[turn-check]`, and only a note that lists at least one violation is ever injected: an audit
 error waits for the next prompt instead. Every time findings are delivered you also
 get a desktop notification ("N rule violation(s): rule; rule"), on both runtimes, never deduplicated;
-opencode v1 adds a toast. `AGENTS_NOTIFY=0` turns it off. Delivery is bounded by the shared ceiling in
-`packages/shared/src/inject-limit.ts` (at most 3 notes per session per hour, then one notification and
-silence until the window passes); the rules behind it are in AGENTS.md, "Plugin loop safety".
+opencode v1 adds a toast. `AGENTS_NOTIFY=0` turns it off. Only the newest turn (the last user message
+and the agent work after it) is judged, and each violation rule is delivered at most once per session,
+so an old finding can never be re-flagged; the shared ceiling in `packages/shared/src/inject-limit.ts`
+is a backstop. The rules behind this are in AGENTS.md, "Plugin loop safety".
 Design and limits: [DESIGN.md](DESIGN.md).
 
 ## When it cannot run

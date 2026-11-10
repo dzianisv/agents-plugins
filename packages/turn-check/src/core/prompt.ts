@@ -177,6 +177,15 @@ export function hasAgentWork(msgs: Msg[]): boolean {
   )
 }
 
+/**
+ * The newest agent turn: the last user message and everything the agent did after it. Only this is
+ * judged, so work already reviewed on an earlier turn can never be flagged again (that was the loop).
+ */
+export function currentTurn(msgs: Msg[]): Msg[] {
+  const lastUser = msgs.map((m) => m.info.role).lastIndexOf("user")
+  return lastUser < 0 ? msgs : msgs.slice(lastUser)
+}
+
 /** Pull the verdict JSON out of a model reply, tolerating code fences and chatter. Null when malformed. */
 export function parseVerdict(text: string): Verdict | null {
   const start = text.indexOf("{")

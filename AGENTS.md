@@ -168,17 +168,20 @@ Test files (`test/*.ts`) may use `console.log` for test output.
 
 ### Plugin loop safety
 
-A plugin that pushes text into a session can drive an agent loop. Every plugin must satisfy all of
-these, and the mistakes below have already shipped once:
+A plugin that pushes text into a session can drive an agent loop. The loop is always the same: the
+plugin re-derives a condition that is still true on every turn and delivers the same message again.
+The mistakes below have already shipped once (588 blocks on one commit, 35 blocks in one session).
 
-- **Bound every injection.** Any nudge, stop block or feedback note is counted in a budget keyed by the
-  scope the plugin owns (session, branch), inside a window (`packages/shared/src/inject-limit.ts`).
-  Past the ceiling the plugin sends one notification and stops injecting until the window passes.
-  Never inject on a state that changes on every turn without a per-scope ceiling.
-- **A changing key must not re-arm the budget.** Count every key that shares the scope prefix, not the
-  exact key. A new commit sha, a new message id or a new timestamp is not a new permission to inject.
-  Give each injection its own key (include the count), or a repeated injection in the same second
-  overwrites the previous one and the ceiling never triggers.
+- **Deliver once per condition, ever.** One message per condition the plugin owns: one per pushed
+  commit for task-gh-guard, one per violation rule for turn-check. Record it where the plugin never
+  deletes it (a file beside the state, not inside it) and never expire it. A later turn that repeats
+  the same condition only `notify`s; it must not deliver again. A windowed ceiling is a backstop, not
+  the fix.
+- **Key on the stable condition, not the value that changes each turn.** A new commit sha, a new
+  message id or a new timestamp is not a new permission to deliver. Two commits on one branch are two
+  conditions (two deliveries); the same commit is one.
+- **Judge only the newest turn.** turn-check judges the last user message and the agent work after it,
+  never the whole conversation, so work already reviewed can never be flagged again.
 - **Inject only on the condition the plugin owns.** Rule violations for turn-check, a red or pending
   check for task-gh-guard. Never inject an error, an empty note, or a "still working" state; those go
   to `notify` instead.
@@ -190,9 +193,10 @@ these, and the mistakes below have already shipped once:
 - **Analyze only your own context.** Read the state file the plugin wrote, or the single turn being
   audited. Never scan the whole conversation, and never re-check a message already checked (the
   audited-message id).
-- **Prove it with a loop test.** Each plugin keeps a test that repeats the same input many times and
-  asserts the injection count stays at or below the ceiling, plus a test that a changed key cannot
-  raise it. `test/plugin-hygiene.test.ts` fails the build when the shared ceiling is not used.
+- **Prove it with a loop test.** Each plugin keeps a test that repeats the same condition many times
+  and asserts it is delivered exactly once, plus a test that the delivery survives the state file
+  being deleted and the plugin being reloaded. `test/plugin-hygiene.test.ts` fails the build when an
+  injected prompt or stop block is not bounded.
 
 ### One TypeScript core for Claude Code and opencode
 

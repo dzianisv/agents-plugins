@@ -54,7 +54,7 @@ Install shape for both runtimes:
 | **session-index** (`packages/session-index`) | yes | no | Writes a short LLM recap of each finished session into `~/.agents/sessions.csv` for cross-session lookup. | opencode: `packages/session-index` |
 | **tts** (`tts.ts`) | yes | no | Reads the final response aloud (macOS `say` or Coqui) when the agent finishes. | `./install.sh` or `npm run install:tts` |
 | **telegram** (`telegram.ts`) | yes | no | Two-way Telegram: posts task completion, takes text or voice replies (Whisper) back into the session. | `./install.sh` or `npm run install:telegram` |
-| **auto-limit-resume** (`opencode-auto-limit-nudge.ts`) | yes | no | When a run dies on a usage/rate limit, waits for the limit to settle (or for the provider reset time) and re-prompts the session so the task continues. Retries with backoff, gives up after the configured window, and stops as soon as the user types. | `./install.sh` |
+| **auto-limit-resume** (`opencode-auto-limit-nudge.ts`) | yes | no | When a run dies on a usage/rate limit, switches to a configured fallback model (free-tier limits) or retries with backoff, then re-prompts the session so the task continues. Pending work is persisted and restored after a plugin reload; never cancels on a started run. | `./install.sh` |
 | **worktree** (`worktree.ts`) | yes | no | Git worktree status tool: dirty state, branch, active sessions. | `./install.sh` |
 
 ## The problem in detail

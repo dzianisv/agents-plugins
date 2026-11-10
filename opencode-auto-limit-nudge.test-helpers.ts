@@ -11,6 +11,7 @@
 export const AUTO_RESUME_PREFIX = "[auto-resume]"
 
 const RETRYABLE = /usage limit|rate.?limit|quota|too many requests|\b429\b|overloaded|capacity|try again in|resets? in/i
+const FREE_LIMIT = /free usage limit|free limit|free models? (?:work|usage)/i
 const PERMANENT = /no longer supports free models|update to the latest|invalid api key|unauthorized|authentication|not found|model not found|insufficient permissions/i
 
 export type AutoLimitResumeConfig = {
@@ -23,6 +24,9 @@ export type AutoLimitResumeConfig = {
   settleMs: number
   respectProviderReset: boolean
   toastDurationMs: number
+  fallbackModels: string[]
+  switchAfterAttempts: number
+  watchdogMs: number
 }
 
 export const DEFAULTS: AutoLimitResumeConfig = {
@@ -32,9 +36,12 @@ export const DEFAULTS: AutoLimitResumeConfig = {
   baseDelayMs: 60_000,
   maxDelayMs: 30 * 60_000,
   maxWindowMs: 24 * 3600_000,
-  settleMs: 90_000,
+  settleMs: 10_000,
   respectProviderReset: true,
   toastDurationMs: 6000,
+  fallbackModels: [],
+  switchAfterAttempts: 2,
+  watchdogMs: 15_000,
 }
 
 export function resolveConfig(raw: Partial<AutoLimitResumeConfig> | undefined): AutoLimitResumeConfig {
@@ -42,6 +49,10 @@ export function resolveConfig(raw: Partial<AutoLimitResumeConfig> | undefined): 
   if (!raw || typeof raw !== "object") return config
   for (const key of Object.keys(DEFAULTS) as (keyof AutoLimitResumeConfig)[]) {
     const value = (raw as any)[key]
+    if (key === "fallbackModels") {
+      if (Array.isArray(value)) config.fallbackModels = value.filter((entry) => typeof entry === "string" && entry.includes("/"))
+      continue
+    }
     if (typeof value === typeof DEFAULTS[key]) (config as any)[key] = value
   }
   return config
@@ -89,7 +100,7 @@ export function parseResetAt(error: any, now: number = Date.now()): number | und
 
 export type FailureVerdict = {
   retryable: boolean
-  reason: string
+  reason: "free-limit" | "limit" | "permanent" | "auth" | "not-a-limit"
   message: string
   resetsAt?: number
 }
@@ -105,12 +116,14 @@ export function classifyFailure(error: any, now: number = Date.now()): FailureVe
   const retryable =
     type === "provider.quota" ||
     type === "provider.rate_limit" ||
+    type === "provider.free-limit" ||
     status === 429 ||
     status === 529 ||
     RETRYABLE.test(message)
   if (!retryable) return { retryable: false, reason: "not-a-limit", message }
 
-  return { retryable: true, reason: "limit", message, resetsAt: parseResetAt(error, now) }
+  const reason = type === "provider.free-limit" || FREE_LIMIT.test(message) ? "free-limit" : "limit"
+  return { retryable: true, reason, message, resetsAt: parseResetAt(error, now) }
 }
 
 export function nextDelayMs({

@@ -35,7 +35,8 @@
     "eval:agent": "node scripts/run-promptfoo.mjs -c agent-evaluation.yaml",
     "eval:e2e": "npx tsx eval.ts",
     "eval:view": "npx promptfoo view --latest",
-    "worktree": "bun scripts/opencode-worktree.ts"
+    "worktree": "bun scripts/opencode-worktree.ts",
+    "doctor:auto-limit": "node scripts/auto-limit-doctor.mjs"
   },
   "keywords": [
     "opencode",

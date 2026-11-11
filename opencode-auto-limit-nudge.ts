@@ -140,27 +140,34 @@ type FailureVerdict = {
   reason: "free-limit" | "limit" | "permanent" | "auth" | "not-a-limit"
   message: string
   resetsAt?: number
+  /** True when the whole plan/account is limited (weekly, monthly, subscription). */
+  planWide: boolean
 }
+
+/** A plan-wide limit is not per-model: switching model on the same provider cannot help. */
+const PLAN_WIDE = /weekly|monthly|daily limit|plan|subscription|extra usage|go-limit|billing/i
 
 function classifyFailure(error: any, now: number = Date.now()): FailureVerdict {
   const message = typeof error?.message === "string" && error.message ? error.message : "request failed"
   const type = typeof error?.type === "string" ? error.type : ""
   const status = Number(error?.response?.status_code ?? error?.response?.status ?? 0)
+  const planWide = PLAN_WIDE.test(message) || /-limit$/.test(type)
 
-  if (PERMANENT.test(message)) return { retryable: false, reason: "permanent", message }
-  if (type === "provider.auth" || status === 401 || status === 403) return { retryable: false, reason: "auth", message }
+  if (PERMANENT.test(message)) return { retryable: false, reason: "permanent", message, planWide: false }
+  if (type === "provider.auth" || status === 401 || status === 403) return { retryable: false, reason: "auth", message, planWide: false }
 
   const retryable =
     type === "provider.quota" ||
     type === "provider.rate_limit" ||
     type === "provider.free-limit" ||
+    /-limit$/.test(type) ||
     status === 429 ||
     status === 529 ||
     RETRYABLE.test(message)
-  if (!retryable) return { retryable: false, reason: "not-a-limit", message }
+  if (!retryable) return { retryable: false, reason: "not-a-limit", message, planWide: false }
 
   const reason = type === "provider.free-limit" || FREE_LIMIT.test(message) ? "free-limit" : "limit"
-  return { retryable: true, reason, message, resetsAt: parseResetAt(error, now) }
+  return { retryable: true, reason, message, resetsAt: parseResetAt(error, now), planWide }
 }
 
 type DelayInput = {
@@ -219,6 +226,7 @@ type Pending = {
   switchedTo?: string
   reason: string
   message: string
+  planWide?: boolean
   tried?: string[]
 }
 
@@ -404,10 +412,19 @@ export default {
     const chooseFallback = (pending: Pending): { providerID: string; id: string } | undefined => {
       const failed = modelKey({ providerID: pending.failedProviderID, id: pending.failedModelID })
       const tried = new Set(pending.tried ?? [])
-      return cfg.fallbackModels
+      const candidates = cfg.fallbackModels
         .map(parseModel)
         .filter((model): model is { providerID: string; id: string } => !!model)
-        .filter((model) => modelKey(model) !== failed && !tried.has(modelKey(model)!))[0]
+        .filter((model) => modelKey(model) !== failed && !tried.has(modelKey(model)!))
+
+      // A plan-wide limit (weekly/monthly/subscription) covers every model on
+      // the provider, so switching within the same provider is pointless; only
+      // a different provider can help. Observed in production 2026-11-10:
+      // opencode-go/minimax -> opencode-go/deepseek, both on the same Go limit.
+      const crossProvider = candidates.filter((model) => model.providerID !== pending.failedProviderID)
+      if (crossProvider.length > 0) return crossProvider[0]
+      if (pending.planWide) return undefined
+      return candidates[0]
     }
 
     const backoff = (attempts: number) =>
@@ -495,7 +512,7 @@ export default {
         pending = registry.state.sessions[sessionID]
         if (!pending) return
         pending.attempts += 1
-        pending.nextAt = Date.now() + backoff(pending.attempts)
+        pending.nextAt = Date.now() + (pending.planWide ? cfg.maxDelayMs : backoff(pending.attempts))
         registry.state.injected = {
           ...(registry.state.injected ?? {}),
           [`${sessionID}|${pending.attempts}`]: { at: Date.now() },
@@ -514,7 +531,7 @@ export default {
         pending = registry.state.sessions[sessionID]
         if (!pending) return
         pending.attempts += 1
-        const delay = backoff(pending.attempts)
+        const delay = pending.planWide ? cfg.maxDelayMs : backoff(pending.attempts)
         pending.nextAt = Date.now() + delay
         record({
           event: "prompt-failed",
@@ -561,6 +578,7 @@ export default {
       pending.lastFailureAt = now
       pending.reason = verdict.reason
       pending.message = verdict.message
+      pending.planWide = verdict.planWide
 
       // If the run that just failed was our failover target, that target is
       // now the failed model; pick a different one next time.
@@ -579,7 +597,10 @@ export default {
         drop(sessionID, "reset-too-far")
         return
       }
-      const delay = canSwitch ? cfg.settleMs : computed ?? cfg.maxDelayMs
+      // A plan-wide limit (weekly/monthly) does not clear in minutes. Take one
+      // quick attempt so the plugin can still switch to another provider, then
+      // wait out the max backoff instead of re-running a doomed request.
+      const delay = canSwitch || verdict.planWide ? cfg.settleMs : computed ?? cfg.maxDelayMs
 
       pending.nextAt = now + Math.max(250, delay)
       persist()

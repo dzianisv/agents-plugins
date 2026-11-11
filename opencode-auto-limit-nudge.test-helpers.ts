@@ -108,27 +108,33 @@ export type FailureVerdict = {
   reason: "free-limit" | "limit" | "permanent" | "auth" | "not-a-limit"
   message: string
   resetsAt?: number
+  planWide: boolean
 }
+
+/** A plan-wide limit is not per-model: switching model on the same provider cannot help. */
+const PLAN_WIDE = /weekly|monthly|daily limit|plan|subscription|extra usage|go-limit|billing/i
 
 export function classifyFailure(error: any, now: number = Date.now()): FailureVerdict {
   const message = typeof error?.message === "string" && error.message ? error.message : "request failed"
   const type = typeof error?.type === "string" ? error.type : ""
   const status = Number(error?.response?.status_code ?? error?.response?.status ?? 0)
+  const planWide = PLAN_WIDE.test(message) || /-limit$/.test(type)
 
-  if (PERMANENT.test(message)) return { retryable: false, reason: "permanent", message }
-  if (type === "provider.auth" || status === 401 || status === 403) return { retryable: false, reason: "auth", message }
+  if (PERMANENT.test(message)) return { retryable: false, reason: "permanent", message, planWide: false }
+  if (type === "provider.auth" || status === 401 || status === 403) return { retryable: false, reason: "auth", message, planWide: false }
 
   const retryable =
     type === "provider.quota" ||
     type === "provider.rate_limit" ||
     type === "provider.free-limit" ||
+    /-limit$/.test(type) ||
     status === 429 ||
     status === 529 ||
     RETRYABLE.test(message)
-  if (!retryable) return { retryable: false, reason: "not-a-limit", message }
+  if (!retryable) return { retryable: false, reason: "not-a-limit", message, planWide: false }
 
   const reason = type === "provider.free-limit" || FREE_LIMIT.test(message) ? "free-limit" : "limit"
-  return { retryable: true, reason, message, resetsAt: parseResetAt(error, now) }
+  return { retryable: true, reason, message, resetsAt: parseResetAt(error, now), planWide }
 }
 
 export function nextDelayMs({

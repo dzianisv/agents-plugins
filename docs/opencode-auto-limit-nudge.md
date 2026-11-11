@@ -71,7 +71,12 @@ Verified against opencode 2.2.5. A real failure event looks like:
    cancels a pending resume.
 3. **Fail over.** On a free-tier limit, or after `switchAfterAttempts`, the
    plugin calls `ctx.session.switchModel({ sessionID, model: { id, providerID } })`
-   with the first fallback that is not the model that just failed.
+   with the first fallback that is not the model that just failed. Prefer a
+   **different provider**: a plan-wide limit (`weekly`, `monthly`, `plan`,
+   `subscription`, `*-limit` error types) covers every model on the provider, so
+   hopping from `opencode-go/minimax` to `opencode-go/deepseek` changes nothing
+   (observed in production on 2026-11-10). Same-provider fallbacks are used only
+   for per-model quotas.
 4. **Resume.** It then calls
    `ctx.session.prompt({ sessionID, text, delivery: "queue", metadata: { autoResume: true } })`
    with a `[auto-resume]` continuation message.
@@ -111,9 +116,13 @@ failure; the legacy `opencode-auto-limit-nudge.json` is still read as fallback):
 }
 ```
 
-- `fallbackModels` — `providerID/modelID` strings, tried in order. The model
-  that just failed is skipped, and a fallback that already failed is not retried
-  while another candidate exists.
+- `fallbackModels` — `providerID/modelID` strings. A cross-provider candidate is
+  always preferred; the model that just failed and every fallback that already
+  failed are skipped, so no A->B->A ping-pong. For the default config that means
+  a Go weekly limit hops to the free model, and a free limit hops to Go.
+- Plan-wide limits (`weekly`, `monthly`, `plan`, `subscription`, `*-limit`
+  error types) use `maxDelayMs` between retries instead of doubling from
+  `baseDelayMs`; a weekly limit does not clear in four minutes.
 - `switchAfterAttempts` — after how many non-free-limit failures to switch.
 - `injectWindowMs` / `injectPerWindow` — injection ceiling (repo plugin
   loop-safety rule). At most `injectPerWindow` continuation prompts per session
@@ -170,6 +179,9 @@ OpenAI-compatible server that returns 429 and then streams a completion, and
 asserts: free-limit recorded, exactly one model switch to the fallback,
 continuation prompt admitted, resumed run completed, pending state cleared. A
 second scenario serves 429 forever and asserts a clean give-up with no hang.
+State tests also cover the production 2026-11-10 case: a `provider.go-limit`
+must not switch to another model on the same provider, and must back off to
+`maxDelayMs` instead of retrying every few minutes.
 
 Last run (`2026-11-10`):
 

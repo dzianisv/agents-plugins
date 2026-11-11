@@ -274,6 +274,57 @@ describe("auto-limit-resume: state machine", () => {
     dispose2?.()
   })
 
+  it("never switches to another model on the same provider for a plan-wide limit", async () => {
+    // Observed in production 2026-11-10: opencode-go/minimax-m3.1-flash hit the
+    // weekly Go limit and the plugin switched to opencode-go/deepseek-v4.1-flash,
+    // which sits on the same weekly limit. Cross-provider only.
+    const harness = await boot({
+      ...fast,
+      fallbackModels: ["fake/model-b", "other/model-z"],
+      switchAfterAttempts: 1,
+      settleMs: 20,
+    })
+    harness.host.session("ses_l", { model: { providerID: "fake", id: "model-a" } })
+
+    const weekly = {
+      type: "provider.go-limit",
+      message: "OpenCode Go weekly usage limit reached. Switch to a free model, or turn on Extra Usage.",
+    }
+    harness.host.fail("ses_l", weekly)
+    await waitFor(() => harness.host.prompts.length === 1)
+
+    assert.deepStrictEqual(
+      harness.host.switches.map((s) => `${s.model.providerID}/${s.model.id}`),
+      ["other/model-z"],
+      "must leave the provider, not hop between models on it",
+    )
+
+    harness.dispose()
+  })
+
+  it("uses the long backoff for a plan-wide limit with no cross-provider fallback", async () => {
+    const harness = await boot({
+      ...fast,
+      fallbackModels: ["fake/model-b"],
+      switchAfterAttempts: 1,
+      maxDelayMs: 5_000,
+    })
+    harness.host.session("ses_m", { model: { providerID: "fake", id: "model-a" } })
+
+    harness.host.fail("ses_m", {
+      type: "provider.go-limit",
+      message: "OpenCode Go weekly usage limit reached. Switch to a free model, or turn on Extra Usage.",
+    })
+    await waitFor(() => harness.host.prompts.length === 1)
+    await sleep(100)
+
+    assert.strictEqual(harness.host.switches.length, 0, "same-provider fallback skipped")
+    const armed = records(harness.dir).filter((r) => r.event === "armed").at(-1)
+    assert.ok(armed.inMs >= 4_000, `weekly limit must back off to maxDelayMs, got ${armed.inMs}ms`)
+
+    harness.dispose()
+  })
+
   it("stops injecting after the rolling injection ceiling", async () => {
     // Repo rule: a plugin that pushes text into a session must bound it, and a
     // changing key must not re-arm the budget.

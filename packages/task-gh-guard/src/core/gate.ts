@@ -234,7 +234,7 @@ function ghEnvWithoutToken(): NodeJS.ProcessEnv {
   return env
 }
 
-async function ghJson(args: string[], timeout = 60_000): Promise<{ doc: unknown; error: string | null }> {
+export async function ghJson(args: string[], timeout = 60_000): Promise<{ doc: unknown; error: string | null }> {
   let result = await run("gh", args, { timeout })
   // A stale exported token must not wedge the gate: retry once with gh's own configured auth.
   if (result.code !== 0 && /Bad credentials/i.test(`${result.stderr}\n${result.stdout}`)) {

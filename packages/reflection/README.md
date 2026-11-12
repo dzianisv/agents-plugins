@@ -23,8 +23,12 @@ OpenCode v2 loads the package's `server.ts`; add the directory to `plugins`:
 
 ## Configuration
 
-- `~/.config/opencode/reflection.yaml` — `models:` list of judge model specs (weak models such as
-  `haiku`, `mini`, `flash` are rejected), and an optional `routing:` block.
+- `~/.agents/plugins/reflection/model` — one `provider/model` line, the same file every judge plugin
+  reads (`gh-guard`, `agents-md-guard`). When present it wins; comments with `#` and blank lines are
+  ignored; `AGENTS_PLUGINS_HOME` moves the base directory.
+- `~/.config/opencode/reflection.yaml` — fallback `models:` list of judge model specs (weak models such as
+  `haiku`, `mini`, `flash` are rejected), and an optional `routing:` block. Used when the model file is
+  absent.
 - `.reflection.md` / `reflection.md` in the project overrides the default self-assessment prompt.
 - `REFLECTION_DEBUG=1` writes `.reflection/debug.log`.
 

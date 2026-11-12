@@ -1304,3 +1304,41 @@ describe("isPlanMode", () => {
     })
   })
 })
+
+describe("configured judge model", () => {
+  const fs = require("node:fs") as typeof import("node:fs")
+  const os = require("node:os") as typeof import("node:os")
+  const path = require("node:path") as typeof import("node:path")
+  const { loadReflectionModelList, readConfiguredModel } = require("../reflection-3.ts")
+
+  const withHome = async (body: (home: string) => Promise<void>, model?: string) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "reflection-model-"))
+    const previous = process.env.AGENTS_PLUGINS_HOME
+    process.env.AGENTS_PLUGINS_HOME = home
+    try {
+      if (model !== undefined) {
+        fs.mkdirSync(path.join(home, "reflection"), { recursive: true })
+        fs.writeFileSync(path.join(home, "reflection", "model"), model)
+      }
+      await body(home)
+    } finally {
+      if (previous === undefined) delete process.env.AGENTS_PLUGINS_HOME
+      else process.env.AGENTS_PLUGINS_HOME = previous
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  }
+
+  test("the plugin model file wins, skipping comments", async () => {
+    await withHome(async () => {
+      assert.equal(await readConfiguredModel(), "fireworks-ai/judge")
+      assert.deepEqual(await loadReflectionModelList(), ["fireworks-ai/judge"])
+    }, "# judge model\nfireworks-ai/judge\n")
+  })
+
+  test("no model file falls back to the yaml list", async () => {
+    await withHome(async () => {
+      assert.equal(await readConfiguredModel(), "")
+      assert.ok(Array.isArray(await loadReflectionModelList()))
+    })
+  })
+})

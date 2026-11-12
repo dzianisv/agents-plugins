@@ -783,7 +783,28 @@ export function getRoutingModel(config: RoutingConfig, category: RoutingCategory
   return { providerID, modelID }
 }
 
+/** The plugin config directory, the same one gh-guard and agents-md-guard use. */
+function reflectionPluginDir(): string {
+  return join(process.env.AGENTS_PLUGINS_HOME || join(homedir(), ".agents", "plugins"), "reflection")
+}
+
+/** The `provider/model` line from `<plugin dir>/model`, or "" when the file is missing or empty. */
+export async function readConfiguredModel(): Promise<string> {
+  try {
+    const content = await readFile(join(reflectionPluginDir(), "model"), "utf-8")
+    return content.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("#")) ?? ""
+  } catch {
+    return ""
+  }
+}
+
 export async function loadReflectionModelList(): Promise<string[]> {
+  // Same config as the other judge plugins: one `provider/model` line in ~/.agents/plugins/reflection/model.
+  const configured = await readConfiguredModel()
+  if (configured) {
+    debug("Using configured reflection model:", configured)
+    return [configured]
+  }
   try {
     const content = await readFile(REFLECTION_CONFIG_PATH, "utf-8")
     const models = parseModelListFromYaml(content)

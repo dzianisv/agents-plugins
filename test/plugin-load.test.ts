@@ -14,10 +14,10 @@
 import { describe, it, before, after } from "node:test"
 import assert from "node:assert"
 import { spawn, type ChildProcess } from "child_process"
-import { mkdir, rm, cp, writeFile, readdir } from "fs/promises"
+import { mkdir, rm, cp, writeFile, readdir, readFile } from "fs/promises"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
-import { createOpencodeClient } from "@opencode-ai/sdk/client"
+import { availableModel, type ModelRef } from "../scripts/e2e/model.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, "..")
@@ -31,6 +31,21 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
   let server: ChildProcess | null = null
   let serverOutput: string[] = []
   let serverErrors: string[] = []
+  let password = ""
+  let model: ModelRef
+
+  const api = async (path: string, init: RequestInit = {}) => {
+    const response = await fetch(`http://127.0.0.1:${PORT}/api${path}`, {
+      ...init,
+      headers: {
+        authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+        "content-type": "application/json",
+        ...(init.headers ?? {}),
+      },
+    })
+    if (!response.ok) throw new Error(`${init.method ?? "GET"} ${path}: ${response.status} ${await response.text()}`)
+    return response.json() as Promise<any>
+  }
 
   /**
    * Deploy plugins to test directory - all plugins directly in plugin/
@@ -72,6 +87,8 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
 
   before(async () => {
     console.log("\n=== Setup Test Environment ===\n")
+    model = availableModel()
+    console.log(`Using model: ${model.model}`)
     
     // Clean up
     await rm(TEST_DIR, { recursive: true, force: true })
@@ -92,8 +109,8 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
     // Create minimal opencode config
     const config = {
       "$schema": "https://opencode.ai/config.json",
-      "model": "github-copilot/gpt-4o",
-      "small_model": "github-copilot/gpt-4o",
+      "model": model.model,
+      "small_model": model.model,
       "mcp": {
         "context7": { "enabled": false },
         "playwriter": { "enabled": false },
@@ -163,6 +180,8 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
       const line = d.toString().trim()
       if (line) {
         serverOutput.push(line)
+        const match = /server password (\S+)/.exec(line)
+        if (match) password = match[1]
         console.log(`[stdout] ${line}`)
       }
     })
@@ -171,6 +190,8 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
       const line = d.toString().trim()
       if (line) {
         serverErrors.push(line)
+        const match = /server password (\S+)/.exec(line)
+        if (match) password = match[1]
         console.log(`[stderr] ${line}`)
       }
     })
@@ -207,9 +228,15 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
         break
       }
       
-      // Try to connect (note: /session does NOT accept POST)
+      // Try to connect. opencode 2.x uses /api/session with basic auth.
+      if (!password) {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        continue
+      }
       try {
-        const res = await fetch(`http://127.0.0.1:${PORT}/session`)
+        const res = await fetch(`http://127.0.0.1:${PORT}/api/session`, {
+          headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` },
+        })
         if (res.ok) {
           serverReady = true
           console.log(`[connect] Server ready after ${Date.now() - startTime}ms`)
@@ -251,70 +278,54 @@ describe("Plugin Load Tests - Real OpenCode Environment", { timeout: 120_000 }, 
   })
 
   it("can create a session (plugins are functional)", async () => {
-    const client = createOpencodeClient({
-      baseUrl: `http://localhost:${PORT}`,
-      directory: TEST_DIR
+    const created = await api("/session", {
+      method: "POST",
+      body: JSON.stringify({ model: { providerID: model.providerID, id: model.id } }),
     })
-    
-    const { data: session } = await client.session.create({})
+    const session = created?.data
     assert.ok(session?.id, "Should create a session")
     console.log(`Created session: ${session.id}`)
     
     // Get session info
-    const { data: info } = await client.session.get({ path: { id: session.id } })
+    const info = (await api(`/session/${session.id}`))?.data
     assert.ok(info, "Should get session info")
     console.log(`Session projectID: ${info.projectID}`)
   })
 
   it("can run a simple task (end-to-end)", async () => {
-    const client = createOpencodeClient({
-      baseUrl: `http://localhost:${PORT}`,
-      directory: TEST_DIR
+    const created = await api("/session", {
+      method: "POST",
+      body: JSON.stringify({ model: { providerID: model.providerID, id: model.id } }),
     })
-    
-    // Create session
-    const { data: session } = await client.session.create({})
+    const session = created?.data
     assert.ok(session?.id, "Should create session")
     
     // Send a simple task
-    await client.session.promptAsync({
-      path: { id: session.id },
-      body: { parts: [{ type: "text", text: "Create a file called test.txt with the content 'hello'" }] }
+    await api(`/session/${session.id}/prompt`, {
+      method: "POST",
+      body: JSON.stringify({ text: "Create a file called test.txt in the current directory with the content 'hello'. Then reply DONE." }),
     })
     
-    // Poll for completion (max 60 seconds)
+    // Poll for the task result (max 60 seconds)
     const startTime = Date.now()
     let completed = false
     
     while (Date.now() - startTime < 60_000) {
       await new Promise(r => setTimeout(r, 2000))
-      
-      const { data: messages } = await client.session.messages({
-        path: { id: session.id }
-      })
-      
-      // Check if we have assistant responses
-      const hasResponse = messages?.some((m: any) => 
-        m.info?.role === "assistant" && 
-        m.parts?.some((p: any) => p.type === "text" || p.type === "tool")
-      )
-      
-      if (hasResponse && messages && messages.length >= 2) {
-        completed = true
-        console.log(`Task completed with ${messages.length} messages`)
-        break
-      }
+      try {
+        const text = await readFile(join(TEST_DIR, "test.txt"), "utf8")
+        if (text.includes("hello")) {
+          completed = true
+          console.log("Task completed: test.txt created")
+          break
+        }
+      } catch {}
     }
     
     assert.ok(completed, "Task should complete")
   })
 
   it("worktree tools are registered", async () => {
-    const client = createOpencodeClient({
-      baseUrl: `http://localhost:${PORT}`,
-      directory: TEST_DIR
-    })
-    
     // The fact that server started means tools were parsed correctly
     // If tool schemas were invalid, we'd have seen Zod errors
     

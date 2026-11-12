@@ -111,8 +111,9 @@ Purpose: push an agent to reuse code that already exists in the repos named in
 Flow summary:
 1. `codeindex build` scans source repos, and optional `uses <path>` consumer repos for call sites, into
    one atomic `index.json` plus a rendered `index.md`.
-2. Before a write or edit, the opencode v2/v1 plugin and the Claude Code `PreToolUse` hook extract new
-   exported declarations and score them against the index (same name, two shared tokens, house pattern).
+2. Before a write, edit or shell redirect, the opencode v2/v1 plugin and the Claude Code `PreToolUse`
+   hook extract new exported declarations and score them against the index. Matching uses the
+   declaration body first (hash, then token similarity), then the name, tokens and house patterns.
 3. Warn by default, including a package, file and real call site. `CODEINDEX_ENFORCE=1` denies the
    write. A missing or slow index fails open. Decisions land in `~/.agents/state/codeindex/decisions.jsonl`.
 

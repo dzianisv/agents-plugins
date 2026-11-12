@@ -149,6 +149,77 @@ describe("auto-limit-resume: state machine", () => {
     delete process.env.OPENCODE_AUTO_LIMIT_RESUME_DISABLED
   })
 
+  it("resumes again once the re-prompt cooldown elapses", async () => {
+    // The whole point of the cooldown: bounded, but it does nudge again when
+    // the quota is plausibly back. A count-based cap would stay silent forever.
+    const harness = await boot({ ...fast, fallbackModels: [], maxAttempts: 20, rePromptMs: 4_000 })
+    harness.host.session("ses_cd")
+
+    harness.host.fail("ses_cd")
+    await waitFor(() => harness.host.prompts.length === 1)
+    harness.host.fail("ses_cd")
+    await waitFor(() => records(harness.dir).some((r) => r.event === "suppress" && r.reason === "cooldown"), 5_000)
+    assert.strictEqual(harness.host.prompts.length, 1, "inside the cooldown")
+
+    // Silence is only acceptable if it ends: the cooldown must release.
+    await waitFor(() => harness.host.prompts.length === 2, 10_000)
+    harness.dispose()
+  }, 15_000)
+
+  it("delivers one [auto-resume] per model per episode, not one per retry", async () => {
+    // Production 2026-11-10 sent 19 identical continuations to the same still
+    // limited model, one per retry.
+    const harness = await boot({ ...fast, fallbackModels: [], maxAttempts: 60, rePromptMs: 60_000 })
+    harness.host.session("ses_one")
+
+    harness.host.fail("ses_one")
+    await waitFor(() => harness.host.prompts.length === 1, 5_000)
+
+    for (let i = 0; i < 9; i++) {
+      // Our own continuation must not count as user input.
+      harness.host.emit("session.next.prompted", {
+        sessionID: "ses_one",
+        messageID: `msg_${i}`,
+        prompt: { text: `${PREFIX} continue` },
+        delivery: "queue",
+      })
+      harness.host.fail("ses_one")
+      await sleep(350)
+    }
+    await sleep(1_400)
+
+    assert.strictEqual(harness.host.prompts.length, 1, "one continuation, not one per retry")
+    const trail = records(harness.dir)
+    assert.ok(trail.some((r) => r.event === "suppress"), "suppression recorded")
+    assert.ok(!trail.some((r) => r.event === "episode-reset"), "own prompt does not reset the episode")
+
+    harness.dispose()
+  }, 20_000)
+
+  it("allows one new resume after the user sends a real message", async () => {
+    const harness = await boot({ ...fast, fallbackModels: [], maxAttempts: 20 })
+    harness.host.session("ses_two")
+
+    harness.host.fail("ses_two")
+    await waitFor(() => harness.host.prompts.length === 1)
+    await sleep(120)
+    assert.strictEqual(harness.host.prompts.length, 1)
+
+    harness.host.emit("session.next.prompted", {
+      sessionID: "ses_two",
+      messageID: "msg_user",
+      prompt: { text: "keep going please" },
+      delivery: "queue",
+    })
+    await sleep(50)
+    harness.host.fail("ses_two")
+    await waitFor(() => harness.host.prompts.length === 2)
+
+    assert.ok(records(harness.dir).some((r) => r.event === "episode-reset"), "user message starts a new episode")
+
+    harness.dispose()
+  })
+
   it("switches to a fallback model on a free limit and resumes", async () => {
     const harness = await boot(fast)
     harness.host.session("ses_a")
@@ -327,14 +398,16 @@ describe("auto-limit-resume: state machine", () => {
 
   it("stops injecting after the rolling injection ceiling", async () => {
     // Repo rule: a plugin that pushes text into a session must bound it, and a
-    // changing key must not re-arm the budget.
+    // changing key must not re-arm the budget. Each resume lands on a new
+    // model, so the cooldown does not mask the ceiling.
     const harness = await boot({
       ...fast,
       maxAttempts: 100,
       settleMs: 10,
       baseDelayMs: 10,
       maxDelayMs: 20,
-      fallbackModels: [],
+      fallbackModels: ["f/b", "f/c", "f/d", "f/e"],
+      switchAfterAttempts: 1,
       injectPerWindow: 3,
       injectWindowMs: 60_000,
     })
@@ -342,7 +415,6 @@ describe("auto-limit-resume: state machine", () => {
 
     for (let i = 0; i < 8; i++) {
       const before = records(harness.dir).filter((r) => r.event === "prompt").length
-      harness.host.session("ses_k", { outcome: "failed" })
       harness.host.fail("ses_k", { type: "provider.rate_limit", message: "Too Many Requests", response: { status_code: 429 } })
       await waitFor(() => {
         const rows = records(harness.dir)
@@ -362,16 +434,14 @@ describe("auto-limit-resume: state machine", () => {
   }, 30_000)
 
   it("gives up after maxAttempts", async () => {
-    const harness = await boot({ ...fast, maxAttempts: 2, fallbackModels: [] })
+    const harness = await boot({ ...fast, maxAttempts: 2, fallbackModels: ["fake/model-b", "fake/model-c"] })
     harness.host.session("ses_f")
 
     harness.host.fail("ses_f", { type: "provider.rate_limit", message: "Too Many Requests", response: { status_code: 429 } })
     await waitFor(() => harness.host.prompts.length === 1)
-    harness.host.session("ses_f", { outcome: "failed" })
     harness.host.fail("ses_f", { type: "provider.rate_limit", message: "Too Many Requests", response: { status_code: 429 } })
     await waitFor(() => harness.host.prompts.length === 2)
 
-    harness.host.session("ses_f", { outcome: "failed" })
     harness.host.fail("ses_f", { type: "provider.rate_limit", message: "Too Many Requests", response: { status_code: 429 } })
     await waitFor(() => records(harness.dir).some((r) => r.event === "give-up"))
 

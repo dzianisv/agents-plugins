@@ -58,7 +58,8 @@ const fallbacks = Array.isArray(config.fallbackModels) ? config.fallbackModels :
 const providers = new Set(fallbacks.map((entry) => String(entry).split("/")[0]))
 note(fallbacks.length > 0, "fallbacks configured", fallbacks.join(", ") || "none: the plugin can only retry the same model")
 note(providers.size > 1, "fallbacks span more than one provider", [...providers].join(", ") || "none")
-note(Number(config.injectPerWindow ?? 8) > 0, "injection ceiling set", String(config.injectPerWindow ?? "default 8"))
+note(Number(config.injectPerWindow ?? 3) > 0, "injection ceiling set", String(config.injectPerWindow ?? "default 3"))
+note(Number(config.rePromptMs ?? 1_800_000) > 0, "re-prompt cooldown set", `${Math.round(Number(config.rePromptMs ?? 1_800_000) / 60_000)} min per model`)
 
 // 3. state and trail
 try {

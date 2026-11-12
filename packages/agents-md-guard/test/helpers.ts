@@ -40,6 +40,8 @@ export const writeTranscript = (path: string, entries: unknown[]) => writeFileSy
 
 const ENV_KEYS = [
   "AGENTS_NOTIFY",
+  "AGENTS_MD_GUARD_HOME",
+  "AGENTS_MD_GUARD_COMMANDS",
   "AGENTS_NOTIFY_CMD",
   "AGENTS_NOTIFY_STATE_DIR",
   "SUPERVISOR_HOME",
@@ -85,6 +87,7 @@ export function makeEnv() {
   for (const key of ENV_KEYS) saved[key] = process.env[key]
   Object.assign(process.env, {
     AGENTS_NOTIFY_CMD: recorder,
+    AGENTS_MD_GUARD_HOME: join(tmp, "guard"),
     AGENTS_NOTIFY_STATE_DIR: join(tmp, "notify-state"),
     SUPERVISOR_HOME: home,
     SUPERVISOR_RULES: rules,
@@ -97,7 +100,7 @@ export function makeEnv() {
     FAKE_REPLY: PASS_REPLY,
     FAKE_MODE: "reply",
   })
-  for (const name of ["AGENTS_NOTIFY", "SUPERVISOR_ENABLED", "SUPERVISOR_CHILD", "SUPERVISOR_MODEL", "SUPERVISOR_MAX_CHARS", "FAKE_NO_SESSION_ID", "FAKE_DELETE_MODE"]) {
+  for (const name of ["AGENTS_NOTIFY", "AGENTS_MD_GUARD_COMMANDS", "SUPERVISOR_ENABLED", "SUPERVISOR_CHILD", "SUPERVISOR_MODEL", "SUPERVISOR_MAX_CHARS", "FAKE_NO_SESSION_ID", "FAKE_DELETE_MODE"]) {
     delete process.env[name]
   }
 

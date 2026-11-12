@@ -11,6 +11,7 @@ writeFileSync(
 )
 process.env.SUPERVISOR_RULES = rules
 process.env.SUPERVISOR_HOME = join(dir, "state")
+process.env.AGENTS_MD_GUARD_HOME = join(dir, "guard")
 process.env.AGENTS_NOTIFY_CMD = "true"
 process.env.AGENTS_NOTIFY_STATE_DIR = join(dir, "notify")
 const auditLog = join(dir, "state", "audits.jsonl")
@@ -45,9 +46,16 @@ function channel() {
 }
 
 function fakeCtx(opts: { parentID?: string; replies?: string[]; verdict?: string; convo?: any[]; foreignDir?: string }) {
-  const calls = { generated: [] as any[], contextHook: null as any, registrations: 0, injected: [] as any[] }
+  const calls = { generated: [] as any[], contextHook: null as any, toolHook: null as any, registrations: 0, injected: [] as any[] }
   const events = channel()
   const ctx: any = {
+    tool: {
+      hook: async (name: string, cb: any) => {
+        if (name === "execute.before") calls.toolHook = cb
+        calls.registrations++
+        return { dispose: async () => {} }
+      },
+    },
     location: { directory: dir },
     event: { subscribe: () => events },
     session: {
@@ -260,5 +268,40 @@ describe("v2 adapters", () => {
     expect(attachFeedbackV2(msg, "note")).toBe(true)
     expect(attachFeedbackV2(msg, "note")).toBe(false)
     expect(msg.content[1].text).toBe("<system-reminder>\nnote\n</system-reminder>")
+  })
+})
+
+describe("command policy", () => {
+  test("checks a configured command and a DENY blocks the call", async () => {
+    const { ctx, calls } = fakeCtx({ replies: ["DENY: the commit message names no ticket"] })
+    await plugin.setup(ctx)
+    expect(typeof calls.toolHook).toBe("function")
+
+    await expect(calls.toolHook({ tool: "bash", sessionID: "c1", input: { command: "git status" } })).resolves.toBeTruthy()
+    expect(calls.generated).toHaveLength(0)
+
+    await expect(calls.toolHook({ tool: "shell", sessionID: "c1", input: { command: "git commit -m x" } })).rejects.toThrow(
+      "agents-md-guard: the commit message names no ticket",
+    )
+    expect(calls.generated[0].prompt).toContain("git commit -m x")
+    expect(calls.generated[0].prompt).toContain("Replies max 6 lines.")
+  })
+
+  test("an unreadable verdict does not block the command", async () => {
+    const { ctx, calls } = fakeCtx({ replies: ["no idea"] })
+    await plugin.setup(ctx)
+    await expect(calls.toolHook({ tool: "bash", sessionID: "c2", input: { command: "gh pr create" } })).resolves.toBeTruthy()
+  })
+
+  test("AGENTS_MD_GUARD_COMMANDS=0 turns the check off", async () => {
+    process.env.AGENTS_MD_GUARD_COMMANDS = "0"
+    try {
+      const { ctx, calls } = fakeCtx({ replies: ["DENY: x"] })
+      await plugin.setup(ctx)
+      await expect(calls.toolHook({ tool: "bash", sessionID: "c3", input: { command: "git commit" } })).resolves.toBeTruthy()
+      expect(calls.generated).toHaveLength(0)
+    } finally {
+      delete process.env.AGENTS_MD_GUARD_COMMANDS
+    }
   })
 })

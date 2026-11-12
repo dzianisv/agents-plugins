@@ -4,8 +4,9 @@ import { realpathSync } from "node:fs"
 import { join } from "node:path"
 import { auditOnce, type AuditStore } from "./src/core/audit"
 import { pruneLog, record } from "./src/core/audit-log"
+import { needsPolicy, readCommands } from "./src/core/commands"
 import { parseModel } from "./src/core/opencode"
-import { DEFAULT_MODEL, isViolationFeedback, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
+import { DEFAULT_MODEL, isViolationFeedback, parsePolicyVerdict, policyPrompt, TRANSCRIPT_HEADER, type Msg } from "./src/core/prompt"
 import { composeRules, readRules } from "./src/core/rules"
 import { readDelivered, readInjectBudget, stateDir, writeDelivered, writeInjectBudget } from "./src/core/state"
 import { countInWindow, mayInject, recordInjection, type Budget } from "./src/shared/inject-limit"
@@ -16,6 +17,8 @@ const DEFAULT_JUDGE_TIMEOUT_MS = 240000
 const MAX_INJECTIONS = 3
 /** The window the injection ceiling is counted over, in seconds. */
 const INJECTION_WINDOW = 3600
+/** Tool names that run a shell command: v2 uses "shell", v1 uses "bash". */
+const SHELL_TOOLS = new Set(["bash", "shell"])
 
 /** Convert session.context entries to the Msg shape core helpers consume. */
 export function toMsgs(infos: any[]): Msg[] {
@@ -103,8 +106,7 @@ export default {
       return !skipped.get(id)
     }
 
-    const judge = async (system: string, transcript: string): Promise<string> => {
-      const prompt = `${system}${TRANSCRIPT_HEADER}${transcript}`
+    const ask = async (prompt: string): Promise<string> => {
       const ac = new AbortController()
       let timer: ReturnType<typeof setTimeout> | undefined
       const timeout = new Promise<never>((_, reject) => {
@@ -122,6 +124,17 @@ export default {
       } finally {
         clearTimeout(timer)
       }
+    }
+
+    const judge = (system: string, transcript: string): Promise<string> => ask(`${system}${TRANSCRIPT_HEADER}${transcript}`)
+
+    /** Check one command against the rules; null when no pattern matches or the check is off. */
+    const commandVerdict = async (command: string) => {
+      if (process.env.AGENTS_MD_GUARD_COMMANDS === "0") return null
+      if (!needsPolicy(command, readCommands(process.env))) return null
+      const composed = rules()
+      if (!composed) return null
+      return parsePolicyVerdict(await ask(policyPrompt(composed, command)))
     }
 
     /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
@@ -201,6 +214,23 @@ export default {
     ])
 
     pruneLog(stateDir())
+
+    // Check a configured shell command before it runs; a deny throws, which blocks the call.
+    if (ctx.tool?.hook) {
+      await ctx.tool.hook("execute.before", async (event: any) => {
+        if (!SHELL_TOOLS.has(String(event?.tool ?? ""))) return event
+        const command = event?.input?.command
+        if (typeof command !== "string") return event
+        const verdict = await commandVerdict(command).catch((err) => {
+          fail(`command review skipped: ${err instanceof Error ? err.message : String(err)}`)
+          return null
+        })
+        if (verdict?.decision === "deny") {
+          throw new Error(`agents-md-guard: ${verdict.reason || "the command breaks a rule in AGENTS.md"}`)
+        }
+        return event
+      })
+    }
 
     await ctx.session.hook("context", (event: any) => {
       const messages = event?.messages

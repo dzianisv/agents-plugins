@@ -274,10 +274,11 @@ describe("session end hook", () => {
 describe("hooks file and manifest", () => {
   const root = join(import.meta.dir, "..")
 
-  test("hooks.json wires the three hooks to bun entrypoints", () => {
+  test("hooks.json wires the four hooks to bun entrypoints", () => {
     const hooks = JSON.parse(readFileSync(join(root, "hooks", "hooks.json"), "utf8")).hooks
-    expect(Object.keys(hooks).sort()).toEqual(["SessionEnd", "Stop", "UserPromptSubmit"])
+    expect(Object.keys(hooks).sort()).toEqual(["PreToolUse", "SessionEnd", "Stop", "UserPromptSubmit"])
     const cases = [
+      ["PreToolUse", "review.ts"],
       ["Stop", "stop.ts"],
       ["UserPromptSubmit", "prompt.ts"],
       ["SessionEnd", "session-end.ts"],
@@ -296,5 +297,36 @@ describe("hooks file and manifest", () => {
     const manifest = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))
     expect([manifest.name, manifest.version]).toEqual(["agents-md-guard", "0.8.0"])
     expect(manifest.author).toEqual({ name: "Dzianis Vashchuk" })
+  })
+})
+
+describe("pre-tool review hook", () => {
+  const bash = (command: string) => payload({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } })
+
+  test("denies a configured command that breaks a rule", () => {
+    const result = env.runHook("review.ts", bash("git commit -m x"), { FAKE_REPLY: "DENY: the commit message names no ticket" })
+    expect([result.status, result.stderr]).toEqual([0, ""])
+    const out = JSON.parse(result.stdout)
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny")
+    expect(out.hookSpecificOutput.permissionDecisionReason).toBe("agents-md-guard: the commit message names no ticket")
+    expect(env.calls()).toHaveLength(1)
+  })
+
+  test("allows a configured command the judge allows", () => {
+    const result = env.runHook("review.ts", bash("gh pr create --title x"), { FAKE_REPLY: "ALLOW" })
+    expect([result.status, result.stdout]).toEqual([0, ""])
+    expect(env.calls()).toHaveLength(1)
+  })
+
+  test("skips a command that is not on the list, without a judge call", () => {
+    const result = env.runHook("review.ts", bash("git status"), { FAKE_REPLY: "DENY: x" })
+    expect([result.status, result.stdout]).toEqual([0, ""])
+    expect(env.calls()).toHaveLength(0)
+  })
+
+  test("ignores a non-Bash tool", () => {
+    const result = env.runHook("review.ts", payload({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: {} }), { FAKE_REPLY: "DENY: x" })
+    expect([result.status, result.stdout]).toEqual([0, ""])
+    expect(env.calls()).toHaveLength(0)
   })
 })

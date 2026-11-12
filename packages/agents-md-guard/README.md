@@ -21,6 +21,26 @@ A failed audit (judge exits non-zero, times out, or returns no verdict) raises a
 and, in opencode, an error toast, through `packages/shared/notify`. In Claude Code the next prompt also
 carries an `agents-md-guard ERROR:` note. `AGENTS_NOTIFY=0` turns the notification off.
 
+## Command policy
+
+Before a shell command that matches the list in `~/.agents/plugins/agents-md-guard/commands`, a judge
+checks it against the same AGENTS.md rules and blocks it with a deny reason when running it would
+clearly break one. One plain substring per line, not a regex; the file is created with these defaults:
+
+```
+git commit, git push, git rebase, git merge, git tag, git reset, git revert, git cherry-pick
+gh pr create|comment|review|edit|merge|close|reopen|ready
+gh issue create|comment|edit|close|reopen
+gh release create|edit|delete
+kubectl apply|create|replace|patch|edit|delete|scale|rollout|set|exec|drain|cordon|uncordon|taint
+```
+
+A missing file is created from the defaults; an empty file means no command is checked; a `#` line is
+a comment. `AGENTS_MD_GUARD_HOME` moves the directory, `AGENTS_MD_GUARD_COMMANDS=0` turns the check
+off. It fails open: a timeout, a missing judge or an unreadable verdict lets the command run and sends
+a notification. The check runs in `tool.execute.before` in opencode (both entries) and as a `PreToolUse`
+Bash hook in Claude Code.
+
 ## Install
 
 Claude Code (needs `bun` and the `opencode` CLI on PATH, the audit runs through it). After any change, bump `version` in `.claude-plugin/plugin.json` and run `claude plugin update agents-md-guard@agents-plugins`:

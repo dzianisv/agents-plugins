@@ -5,7 +5,8 @@ import { join } from "node:path"
 import { auditOnce, type AuditStore } from "../core/audit"
 import { pruneLog, record } from "../core/audit-log"
 import { attachFeedback, isHeadlessRun, isRealUserMessage, JUDGE_AGENT, judgeAgent, parseModel } from "../core/opencode"
-import { DEFAULT_MODEL, isViolationFeedback } from "../core/prompt"
+import { needsPolicy, readCommands } from "../core/commands"
+import { DEFAULT_MODEL, isViolationFeedback, parsePolicyVerdict, policyPrompt } from "../core/prompt"
 import { composeRules, readRules } from "../core/rules"
 import { readDelivered, readInjectBudget, stateDir, writeDelivered, writeInjectBudget } from "../core/state"
 import { countInWindow, mayInject, recordInjection, type Budget } from "../shared/inject-limit"
@@ -14,6 +15,8 @@ import { toMsg } from "./messages"
 
 const DEFAULT_JUDGE_TIMEOUT_MS = 240000
 const AUDIT_TITLE = "supervisor audit"
+/** Tool names that run a shell command: v2 uses "shell", v1 uses "bash". */
+const SHELL_TOOLS = new Set(["bash", "shell"])
 const STALE_AUDIT_MS = 5 * 60 * 1000
 /** At most this many immediate feedback injections per session per window. */
 const MAX_INJECTIONS = 3
@@ -84,6 +87,32 @@ export const Supervisor: Plugin = async ({ client, directory }) => {
       waited: early,
     }
     return { text: answer.parts.flatMap((p) => (p.type === "text" ? [p.text as string] : [])).join(""), meta }
+  }
+
+  /** One throwaway judge session for a command check; the prompt is self-contained, so system is empty. */
+  const judgeCommand = async (sessionID: string, prompt: string): Promise<string> => {
+    const created = await client.session.create({ body: { parentID: sessionID, title: AUDIT_TITLE } })
+    const auditID = created.data?.id
+    if (!auditID) throw new Error("could not create judge session")
+    isChild.set(auditID, true)
+    auditing.add(auditID)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const work = promptJudge(auditID, "", prompt, Date.now() + judgeTimeoutMs)
+      work.catch(() => {})
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          client.session.abort({ path: { id: auditID } }).catch(() => {})
+          reject(new Error("judge timed out"))
+        }, judgeTimeoutMs)
+      })
+      const answer = await Promise.race([work, timeout])
+      return answer.text
+    } finally {
+      clearTimeout(timer)
+      auditing.delete(auditID)
+      client.session.delete({ path: { id: auditID } }).catch(() => {})
+    }
   }
 
   /** Deliver the findings now, so the agent fixes them in this session; a failure leaves the note for the next message. */
@@ -180,9 +209,32 @@ export const Supervisor: Plugin = async ({ client, directory }) => {
   pruneLog(stateDir())
   cleanupStaleAudits().catch(() => {})
 
+  /** Check one configured command against the rules before it runs; a throw blocks the call. */
+  const checkCommand = async (sessionID: string, command: string): Promise<void> => {
+    if (process.env.AGENTS_MD_GUARD_COMMANDS === "0") return
+    if (!needsPolicy(command, readCommands(process.env))) return
+    const composed = rules()
+    if (!composed) return
+    let verdict: ReturnType<typeof parsePolicyVerdict> = null
+    try {
+      verdict = parsePolicyVerdict(await judgeCommand(sessionID, policyPrompt(composed, command)))
+    } catch (err) {
+      log("error", `command review skipped: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    if (verdict?.decision === "deny") throw new Error(`agents-md-guard: ${verdict.reason || "the command breaks a rule in AGENTS.md"}`)
+  }
+
   return {
     config: async (cfg) => {
       cfg.agent = { ...cfg.agent, [JUDGE_AGENT]: judgeAgent(spec) as any }
+    },
+
+    "tool.execute.before": async (input, output) => {
+      if (!SHELL_TOOLS.has(input.tool)) return
+      const command = (output?.args as any)?.command
+      if (typeof command !== "string") return
+      await checkCommand(input.sessionID, command)
     },
 
     event: async ({ event }) => {

@@ -80,16 +80,23 @@ Verified against opencode 2.2.5. A real failure event looks like:
 4. **Resume.** It then calls
    `ctx.session.prompt({ sessionID, text, delivery: "queue", metadata: { autoResume: true } })`
    with a `[auto-resume]` continuation message.
-5. **Persist.** Pending work survives plugin reload, location teardown, and
+5. **Cool down, do not flood.** A retry that lands on the same model which
+   already received a continuation inside `rePromptMs` (default 30 min) is
+   suppressed: the attempt count advances and the next check is scheduled at the
+   cooldown end (or the provider's declared reset, whichever is sooner), but no
+   prompt is sent. On 2026-11-10 the plugin sent 19 identical `[auto-resume]`
+   prompts to the same still-limited model. A real user message in the session
+   lifts the cooldown immediately, so a manual "continue" always works.
+6. **Persist.** Pending work survives plugin reload, location teardown, and
    server restart: it is written to disk and restored on the next `setup`.
    A watchdog (`watchdogMs`, default 15s) re-arms anything overdue. Ownership
    is handed to a surviving plugin instance if the newest one unloads.
-6. **Stop.** Clears on success or interruption; gives up after `maxAttempts` or
+7. **Stop.** Clears on success or interruption; gives up after `maxAttempts` or
    `maxWindowMs`; does not schedule a retry when the provider reset is further
    out than the window.
-7. **No repeats.** A fallback that already failed is not tried again while
+8. **No repeats.** A fallback that already failed is not tried again while
    another candidate exists (no A→B→A ping-pong).
-8. **Cross-process guard.** An exclusive lock file per session (60s stale
+9. **Cross-process guard.** An exclusive lock file per session (60s stale
    timeout) prevents two server processes from prompting the same session.
 
 ## Configuration
@@ -112,7 +119,8 @@ failure; the legacy `opencode-auto-limit-nudge.json` is still read as fallback):
   "switchAfterAttempts": 2,
   "watchdogMs": 15000,
   "injectWindowMs": 3600000,
-  "injectPerWindow": 8
+  "injectPerWindow": 3,
+  "rePromptMs": 1800000
 }
 ```
 
@@ -123,6 +131,10 @@ failure; the legacy `opencode-auto-limit-nudge.json` is still read as fallback):
 - Plan-wide limits (`weekly`, `monthly`, `plan`, `subscription`, `*-limit`
   error types) use `maxDelayMs` between retries instead of doubling from
   `baseDelayMs`; a weekly limit does not clear in four minutes.
+- `rePromptMs` — minimum gap between two `[auto-resume]` prompts for the same
+  model in one session. Default 30 min. This is what stops the flood while still
+  nudging when the quota is plausibly back; it is not a count cap, so a session
+  never goes silent forever.
 - `switchAfterAttempts` — after how many non-free-limit failures to switch.
 - `injectWindowMs` / `injectPerWindow` — injection ceiling (repo plugin
   loop-safety rule). At most `injectPerWindow` continuation prompts per session

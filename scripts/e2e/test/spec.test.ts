@@ -86,7 +86,7 @@ describe("loadSpec", () => {
   test("loads and validates every spec shipped in this repo", async () => {
     const repo = join(import.meta.dir, "..", "..", "..")
     const plugins = discoverPlugins(repo)
-    for (const plugin of ["task-gh-guard", "turn-check", "overhelm", "session-index", "session-self-improve", "auto-review", "reflection"]) {
+    for (const plugin of ["gh-guard", "agents-md-guard", "overhelm", "session-index", "session-self-improve", "auto-review", "reflection"]) {
       expect(plugins).toContain(plugin)
     }
     for (const plugin of plugins) {

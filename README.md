@@ -38,16 +38,16 @@ We measured it: 143 real OpenCode + Claude Code sessions, 227 stops classified. 
 
 Install shape for both runtimes:
 
-- **opencode** — add `"file:///abs/path/to/opencode-plugins/packages/<name>"` to `plugin` in `~/.config/opencode/opencode.json`, then restart opencode. In the table `opencode: <name>` means that package directory.
-- **Claude Code** — `claude plugin marketplace add dzianisv/opencode-plugins`, then `claude plugin install <claude-name>@opencode-plugins`.
+- **opencode** — add `/abs/path/to/agents-plugins/packages/<name>` (the directory, not a file) to `plugins` in `~/.config/opencode/opencode.json`, or run `opencode plugin add <path>`, then restart opencode. In the table `opencode: <name>` means that package directory.
+- **Claude Code** — `claude plugin marketplace add dzianisv/agents-plugins`, then `claude plugin install <claude-name>@agents-plugins`.
 
 | Plugin | opencode | Claude Code | What it does | Install |
 |--------|:--------:|:-----------:|--------------|---------|
 | **reflection** (`packages/reflection`) | yes | no | Judge layer: after each turn it checks the task is really complete (tests, PR, CI) and re-prompts the agent when it stopped early. | opencode: `packages/reflection` |
 | **reflection-cc** (`claude/`) | no | yes | Claude Code `Stop` hook: re-prompts when the agent stopped prematurely. | Claude: `reflection-cc` |
 | **session-autoreflect** (`packages/session-autoreflect`) | yes | yes | Every 30 min of working time it injects a reflection prompt — what am I doing, goal, acceptance criteria, is it done, is the plan still right, faster path, can I unblock — and tells the agent to act on the answer. Idle sessions never fire. | opencode: `packages/session-autoreflect` · Claude: `session-autoreflect` |
-| **turn-check** (`packages/turn-check`) | yes | yes | After each turn, a cheap model audits the transcript against `~/.agents/AGENTS.md` and feeds violations back on the next message. | opencode: `packages/turn-check` · Claude: `turn-check` |
-| **task-gh-guard** (`packages/task-gh-guard`) | yes | yes | Blocks the end of a turn while GitHub CI for a commit this session pushed is red or still running; reviews git and GitHub writes against plain rules. | opencode: `packages/task-gh-guard` · Claude: `task-gh-guard` |
+| **agents-md-guard** (`packages/agents-md-guard`) | yes | yes | After each turn, a cheap model audits the transcript against `~/.agents/AGENTS.md` and feeds violations back on the next message. | opencode: `packages/agents-md-guard` · Claude: `agents-md-guard` |
+| **gh-guard** (`packages/gh-guard`) | yes | yes | Blocks the end of a turn while GitHub CI for a commit this session pushed is red or still running; reviews git and GitHub writes against plain rules. | opencode: `packages/gh-guard` · Claude: `gh-guard` |
 | **codeindex** (`packages/codeindex`) | yes | yes | Warns or blocks a new exported declaration when a repo in your reuse index already provides it, with the package, file and a real call site. | opencode: `packages/codeindex` · Claude: `codeindex` |
 | **auto-review** (`packages/auto-review`) | yes | no | After a substantive turn, a second model reviews the work and reports completion, test, and CI gaps. | opencode: `opencode-auto-review` (npm) or `packages/auto-review` |
 | **overhelm** (`packages/overhelm`) | yes | yes | Injects a short-reply, plain-English instruction into every prompt; one instruction file for both runtimes. | opencode: `packages/overhelm` · Claude: `overhelm` |
@@ -57,6 +57,49 @@ Install shape for both runtimes:
 | **telegram** (`telegram.ts`) | yes | no | Two-way Telegram: posts task completion, takes text or voice replies (Whisper) back into the session. | `./install.sh` or `npm run install:telegram` |
 | **auto-limit-resume** (`opencode-auto-limit-nudge.ts`) | yes | no | When a run dies on a usage/rate limit, switches to a configured fallback model (free-tier limits) or retries with backoff, then re-prompts the session so the task continues. Pending work is persisted and restored after a plugin reload; never cancels on a started run. | `./install.sh` |
 | **worktree** (`worktree.ts`) | yes | no | Git worktree status tool: dirty state, branch, active sessions. | `./install.sh` |
+
+## Install agents-md-guard and gh-guard
+
+Both guards run on opencode and Claude Code. They need `bun` and the `opencode` CLI on PATH, because each one calls `opencode run` as its judge. `gh-guard` also needs an authenticated `gh`.
+
+opencode, straight from the current `main`:
+
+```bash
+opencode plugin add "github:dzianisv/agents-plugins#main::path:packages/agents-md-guard"
+opencode plugin add "github:dzianisv/agents-plugins#main::path:packages/gh-guard"
+```
+
+`#main` follows the current release line. Replace it with a tag (for example `#agents-md-guard-v0.8.0`) when you want a fixed version.
+
+opencode, from a local clone you are working on:
+
+```bash
+opencode plugin add /absolute/path/to/agents-plugins/packages/agents-md-guard
+opencode plugin add /absolute/path/to/agents-plugins/packages/gh-guard
+```
+
+Both commands edit `~/.config/opencode/opencode.json`. To do it by hand, the same entries go in the `plugins` array:
+
+```json
+{
+  "plugins": [
+    "/absolute/path/to/agents-plugins/packages/agents-md-guard",
+    "/absolute/path/to/agents-plugins/packages/gh-guard"
+  ]
+}
+```
+
+The entry is the package directory, not a file. Restart opencode after either route.
+
+Claude Code:
+
+```bash
+claude plugin marketplace add dzianisv/agents-plugins
+claude plugin install agents-md-guard@agents-plugins
+claude plugin install gh-guard@agents-plugins
+```
+
+Check it works: ask the agent to break a rule from your `AGENTS.md`, for example reply with bold headers when the file forbids them. `agents-md-guard` answers with a `[agents-md-guard]` note that names the rule. `gh-guard` blocks a turn while CI for a commit you just pushed is red or pending.
 
 ## The problem in detail
 

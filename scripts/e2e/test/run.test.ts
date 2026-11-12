@@ -75,14 +75,14 @@ describe("parseResult", () => {
 
 describe("formatTable", () => {
   const results: CaseResult[] = [
-    { plugin: "task-gh-guard", runtime: "claude", status: "pass", checks: [{ name: "exit code 0", ok: true }, { name: "review allowed the commit", ok: true, detail: "decision allow" }] },
-    { plugin: "task-gh-guard", runtime: "opencode", status: "fail", checks: [{ name: "review allowed the commit", ok: false, detail: "x".repeat(100) }] },
+    { plugin: "gh-guard", runtime: "claude", status: "pass", checks: [{ name: "exit code 0", ok: true }, { name: "review allowed the commit", ok: true, detail: "decision allow" }] },
+    { plugin: "gh-guard", runtime: "opencode", status: "fail", checks: [{ name: "review allowed the commit", ok: false, detail: "x".repeat(100) }] },
   ]
 
   test("renders a row per check with PASS/FAIL", () => {
     const table = formatTable(results)
     expect(table).toContain("plugin")
-    expect(table).toContain("task-gh-guard")
+    expect(table).toContain("gh-guard")
     expect(table).toContain("PASS")
     expect(table).toContain("FAIL")
     expect(table.split("\n").length).toBe(5)

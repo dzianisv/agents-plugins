@@ -189,22 +189,22 @@ plugin re-derives a condition that is still true on every turn and delivers the 
 The mistakes below have already shipped once (588 blocks on one commit, 35 blocks in one session).
 
 - **Deliver once per condition, ever.** One message per condition the plugin owns: one per pushed
-  commit for task-gh-guard, one per violation rule for turn-check. Record it where the plugin never
+  commit for gh-guard, one per violation rule for agents-md-guard. Record it where the plugin never
   deletes it (a file beside the state, not inside it) and never expire it. A later turn that repeats
   the same condition only `notify`s; it must not deliver again. A windowed ceiling is a backstop, not
   the fix.
 - **Key on the stable condition, not the value that changes each turn.** A new commit sha, a new
   message id or a new timestamp is not a new permission to deliver. Two commits on one branch are two
   conditions (two deliveries); the same commit is one.
-- **Judge only the newest turn.** turn-check judges the last user message and the agent work after it,
+- **Judge only the newest turn.** agents-md-guard judges the last user message and the agent work after it,
   never the whole conversation, so work already reviewed can never be flagged again.
-- **Inject only on the condition the plugin owns.** Rule violations for turn-check, a red or pending
-  check for task-gh-guard. Never inject an error, an empty note, or a "still working" state; those go
+- **Inject only on the condition the plugin owns.** Rule violations for agents-md-guard, a red or pending
+  check for gh-guard. Never inject an error, an empty note, or a "still working" state; those go
   to `notify` instead.
-- **Name the plugin in the injected text** (`[turn-check]`, `[task-gh-guard]`), so a loop is obvious in
+- **Name the plugin in the injected text** (`[agents-md-guard]`, `[gh-guard]`), so a loop is obvious in
   the session and in the transcript.
-- **Never react to your own injection.** turn-check skips its own note (synthetic parts, supervisor
-  metadata, the `stop_hook_active` flag); task-gh-guard reacts only to pushes recorded by its tool
+- **Never react to your own injection.** agents-md-guard skips its own note (synthetic parts, supervisor
+  metadata, the `stop_hook_active` flag); gh-guard reacts only to pushes recorded by its tool
   hooks, never to session text. A plugin must not audit, gate or nudge a turn it caused.
 - **Analyze only your own context.** Read the state file the plugin wrote, or the single turn being
   audited. Never scan the whole conversation, and never re-check a message already checked (the

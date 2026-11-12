@@ -1,6 +1,6 @@
 // Failure notifications shared by the agents-plugins packages; each package links this directory as src/shared.
 //
-//   await notify("turn-check", "audit failed: judge timed out", { client })
+//   await notify("agents-md-guard", "audit failed: judge timed out", { client })
 //
 // Raises a desktop notification and, when an opencode v1 client is given, an in-app toast. It never writes to
 // stdout or stderr, which would corrupt the opencode TUI. The same message shows at most once per

@@ -7,8 +7,8 @@ core; this covers loading, packaging and the real runtimes. Design: [`docs/e2e-c
 ## Run it
 
 ```bash
-bun scripts/e2e/run.ts --plugin task-gh-guard --plugin turn-check --runtime all
-# or: npm run e2e:containers -- --plugin turn-check --runtime opencode
+bun scripts/e2e/run.ts --plugin gh-guard --plugin agents-md-guard --runtime all
+# or: npm run e2e:containers -- --plugin agents-md-guard --runtime opencode
 ```
 
 | Flag | Meaning |
@@ -59,7 +59,7 @@ The runtime environment also gets `AGENTS_NOTIFY_CMD=bun …/notify-recorder.ts`
 | Claude Code | hooks fired | `system`/`hook_response` events (`--include-hook-events`) | `hook_event`, `outcome` = `success` |
 | Claude Code | install | `claude plugin marketplace add <dir>` + `claude plugin install <plugin>@<name>` | `claude plugin list` shows the plugin `enabled` |
 | Claude Code | auth | `~/.claude/.credentials.json` | `security find-generic-password -s "Claude Code-credentials" -w` on macOS |
-| Claude Code | not emitted | `SessionEnd` hook events are never emitted by headless `claude -p` runs | `turn-check` declares it, the driver skips it |
+| Claude Code | not emitted | `SessionEnd` hook events are never emitted by headless `claude -p` runs | `agents-md-guard` declares it, the driver skips it |
 | opencode | plugin loaded | `$HOME/.local/share/opencode/log/opencode.log` | `msg="loading plugin" id=<plugin dir> entrypoint=file://<plugin dir>/server.ts` |
 | opencode | no plugin error | same log | no `level=ERROR` and no `message="failed to load plugin"` line mentioning the plugin dir (a bad v2 default export fails at WARN) |
 | opencode | v2 entry only | same log | opencode 2.0.29 loads `server.ts`, never the v1 `src/opencode/plugin.ts` |
@@ -68,7 +68,7 @@ The runtime environment also gets `AGENTS_NOTIFY_CMD=bun …/notify-recorder.ts`
 Notes the checks were written against:
 
 - `claude -p` must receive the prompt before the variadic `--allowedTools` flag, or the flag eats it.
-- `--allowedTools "Bash(git commit:*)"` is what lets the task-gh-guard spec run the commit.
+- `--allowedTools "Bash(git commit:*)"` is what lets the gh-guard spec run the commit.
 - opencode runs a managed background service (default port 49374); server logs go to the log file,
   not to `--print-logs` stderr. The driver reads the file.
 - opencode 2.0.29 resolves the session directory from `$PWD`, not the process cwd; the driver sets
@@ -83,7 +83,7 @@ A plugin's `packages/<plugin>/e2e/spec.ts` exports `defineSpec({...})` from
 
 ```ts
 export default defineSpec({
-  plugin: "turn-check",
+  plugin: "agents-md-guard",
   runtimes: ["claude", "opencode"],
   prompt: "Reply with the single word OK.",
   claude: { maxTurns: 2, allowedTools: ["Bash(git commit:*)"] }, // optional

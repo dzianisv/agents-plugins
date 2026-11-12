@@ -12,10 +12,10 @@ COPY package.json /probe/package.json
 
 # A fresh HOME with no ~/.agents/AGENTS.md, so the plugins cannot read the host's rules or state.
 ENV HOME=/probe/home \
-    TASK_GH_GUARD_STATE_DIR=/probe/home/.agents/state/task-gh-guard \
+    GH_GUARD_STATE_DIR=/probe/home/.agents/state/gh-guard \
     SUPERVISOR_HOME=/probe/home/.cache/supervisor \
     AGENTS_NOTIFY=0
 
 RUN mkdir -p /probe/home
 
-CMD ["sh", "-lc", "cd /probe/packages/task-gh-guard && bun test test/loop.test.ts && cd /probe/packages/turn-check && bun test test/loop.test.ts && echo 'ISOLATED LOOP PROBE: PASS'"]
+CMD ["sh", "-lc", "cd /probe/packages/gh-guard && bun test test/loop.test.ts && cd /probe/packages/agents-md-guard && bun test test/loop.test.ts && echo 'ISOLATED LOOP PROBE: PASS'"]

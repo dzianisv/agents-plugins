@@ -13,7 +13,7 @@ COPY package.json /probe/package.json
 
 # A fresh HOME with no ~/.agents/AGENTS.md, so the plugins cannot read the host's rules or state.
 ENV HOME=/probe/home \
-    TASK_GH_GUARD_STATE_DIR=/probe/home/.agents/state/task-gh-guard \
+    GH_GUARD_STATE_DIR=/probe/home/.agents/state/gh-guard \
     SUPERVISOR_HOME=/probe/home/.cache/supervisor \
     AGENTS_NOTIFY_CMD=true
 

@@ -1,0 +1,20 @@
+{
+  "name": "opencode-gh-guard",
+  "version": "0.1.0",
+  "description": "opencode plugin: block the end of a turn while GitHub CI for a commit this session pushed is red or still running.",
+  "type": "module",
+  "main": "server.ts",
+  "exports": {
+    ".": "./server.ts"
+  },
+  "files": ["server.ts", "src/", "hooks/", "bin/"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": ["opencode", "plugin", "ci", "github", "guard"],
+  "author": "dzianisv",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}

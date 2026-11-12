@@ -20,7 +20,7 @@ flowchart LR
 
 | Piece | Where | Job |
 | --- | --- | --- |
-| Image | `scripts/e2e/Dockerfile` | One image for both runtimes: `node:20-bookworm-slim`, bun, git, jq, python3 (session-self-improve's Claude Code hooks), Claude Code (`npm i -g @anthropic-ai/claude-code`, pinned by `CLAUDE_CODE_VERSION`), opencode (the v2 installer, pinned by `OPENCODE_VERSION`). Both CLIs live in one image because turn-check and task-gh-guard call `opencode run` as their judge, also under Claude Code. Based on the Claude Code reference devcontainer (node base, non-root `node` user). No credentials in any layer |
+| Image | `scripts/e2e/Dockerfile` | One image for both runtimes: `node:20-bookworm-slim`, bun, git, jq, python3 (session-self-improve's Claude Code hooks), Claude Code (`npm i -g @anthropic-ai/claude-code`, pinned by `CLAUDE_CODE_VERSION`), opencode (the v2 installer, pinned by `OPENCODE_VERSION`). Both CLIs live in one image because agents-md-guard and gh-guard call `opencode run` as their judge, also under Claude Code. Based on the Claude Code reference devcontainer (node base, non-root `node` user). No credentials in any layer |
 | Host runner | `scripts/e2e/run.ts` | Builds the image (cached by a Dockerfile+entrypoint hash label), exports auth, runs one container per plugin and runtime the spec declares, prints a results table, deletes the temp auth, exits non-zero when any case fails. Flags: `--plugin <name>` (repeatable), `--runtime opencode\|claude\|all`, `--keep` (keep the out dir), `--no-build`, `--timeout <seconds>` |
 | Auth export | `scripts/e2e/auth.ts` | Writes to `mktemp -d` (0700, files 0600), removed in a `finally`. Layout: `opencode.json` (the minimal config), `auth.json`, `claude/.credentials.json`, `claude/oauth-token`; the entrypoint copies each into its `$HOME` path. opencode: copies `~/.local/share/opencode/auth.json` and writes a MINIMAL `opencode.json` that holds only the `provider["fireworks-ai"]` block taken from `~/.config/opencode/opencode.json` (never the user's plugins, MCP servers, agents or other providers). Claude Code: on macOS reads the keychain item `Claude Code-credentials` with `security find-generic-password -s "Claude Code-credentials" -w` and writes `.credentials.json`; on Linux copies `~/.claude/.credentials.json`; `CLAUDE_CODE_OAUTH_TOKEN` in the environment wins when set. Never prints a secret, never passes one on a command line or in `docker run -e` (visible in `ps` and `docker inspect`); files are mounted read-only and the container entrypoint copies them into its fresh `$HOME` |
 | Driver | `scripts/e2e/driver.ts` | Runs inside the container as `bun driver.ts <runtime> <plugin>`. Loads `packages/<plugin>/e2e/spec.ts`, installs the plugin, starts the runtime, runs the checks, writes `/out/<plugin>-<runtime>.json` (`{ plugin, runtime, status, checks: [{ name, ok, detail }], logTail }`) |
@@ -33,7 +33,7 @@ flowchart LR
 - Fresh `$HOME`, `XDG_*` and working directory inside the container. The user's `~/.claude`, `~/.config/opencode`, `~/.agents` and `~/.env` are never mounted.
 - The repo is mounted read-only at `/src`; the driver copies it to `/work/agents-plugins` (skipping `node_modules` and `.git`, which are 1.7 GB on the host) so the install and the runtimes can write.
 - `--rm`, `--cpus 2`, `--memory 2g`, `--pids-limit 512`, a hard wall-clock timeout per container (default 300 s), no privileged mode, no host network, no docker socket.
-- State the plugins write (`SUPERVISOR_HOME`, `TASK_GH_GUARD_STATE_DIR`, `AGENTS_NOTIFY_*`, `~/.agents/plugins/...`) all live in the container home, and `AGENTS_NOTIFY_CMD` points at `scripts/e2e/notify-recorder.ts` so a notify call is visible to the checks instead of showing a desktop notification.
+- State the plugins write (`SUPERVISOR_HOME`, `GH_GUARD_STATE_DIR`, `AGENTS_NOTIFY_*`, `~/.agents/plugins/...`) all live in the container home, and `AGENTS_NOTIFY_CMD` points at `scripts/e2e/notify-recorder.ts` so a notify call is visible to the checks instead of showing a desktop notification.
 
 ## Install paths (what "loaded" means)
 
@@ -46,8 +46,8 @@ flowchart LR
 
 - opencode: `-m fireworks-ai/accounts/fireworks/models/deepseek-v4p1-flash` (the model name carries no `#variant`), prompt "Reply with the single word OK."
 - Claude Code: `--model haiku`, `--max-turns 2`, the same prompt, and `--permission-mode` / `--allowedTools` chosen per spec (default: no tools).
-- A spec that needs a tool call (task-gh-guard runs `git`) names the one command in the prompt and allows only that tool.
-- One prompt per plugin per runtime. Judge calls made by the plugins themselves (turn-check, task-gh-guard review) use their own default model and are part of the "works" check.
+- A spec that needs a tool call (gh-guard runs `git`) names the one command in the prompt and allows only that tool.
+- One prompt per plugin per runtime. Judge calls made by the plugins themselves (agents-md-guard, gh-guard review) use their own default model and are part of the "works" check.
 
 ## What each plugin asserts
 
@@ -55,8 +55,8 @@ Every spec asserts: the plugin loaded (above), the runtime exited 0, and no `not
 
 | Plugin | Runtimes | Works check |
 | --- | --- | --- |
-| task-gh-guard | claude, opencode | The prompt asks the agent to run `git commit --allow-empty -m "add health check"` in a temp repo. `review.jsonl` in the state dir has an entry for that command with decision `allow`, and `~/.agents/plugins/task-gh-guard/{model,rules}` exist with defaults |
-| turn-check | claude, opencode | After the run, `audits.jsonl` in `SUPERVISOR_HOME` gains an entry for the session (an audit ran with the real judge) with a verdict or a logged error that the spec reports as a failure. Claude Code audits in a detached child, so poll up to 120 s |
+| gh-guard | claude, opencode | The prompt asks the agent to run `git commit --allow-empty -m "add health check"` in a temp repo. `review.jsonl` in the state dir has an entry for that command with decision `allow`, and `~/.agents/plugins/gh-guard/{model,rules}` exist with defaults |
+| agents-md-guard | claude, opencode | After the run, `audits.jsonl` in `SUPERVISOR_HOME` gains an entry for the session (an audit ran with the real judge) with a verdict or a logged error that the spec reports as a failure. Claude Code audits in a detached child, so poll up to 120 s |
 | overhelm | claude, opencode | Setup writes a marker instruction into `~/.agents/overhelm.md`; the prompt asks the model to repeat its standing instructions, so the marker appearing in the run output proves the injection ran |
 | session-index | opencode | The spec env shortens `OPENCODE_SESSION_INDEX_IDLE_MS`; after the run the row for the session (its folder is the run cwd) is polled for in `~/.agents/sessions.csv` |
 | session-self-improve | claude, opencode | The prompt carries a `from now on` rule cue; a queue record with kinds `["rule"]` appears under `~/.claude/session-self-improve/queue` (Claude Code) or `~/.cache/session-self-improve/queue` (opencode) |
@@ -67,7 +67,7 @@ When a README does not make the effect clear, assert "loaded" and the clean exit
 
 Resolved (2026-11-07): `auto-review` and `reflection` now ship v2 `server.ts` entries (`{ id, setup }`) and their opencode cases are green. auto-review reviews on the `session.execution.*` events and creates the review session with `ctx.session.create`; reflection judges each finished turn through `ctx.generate.text` and pushes feedback with `ctx.session.prompt`. Both keep only the load check, because the review needs a non-trivial turn and a second model and the reflection judge needs a real task, and the cheap prompt supplies neither.
 
-Resolved (2026-11-07): the task-gh-guard opencode case is green. `server.ts` registers `execute.before` and reviews the write, so `review.jsonl` and `~/.agents/plugins/task-gh-guard/{model,rules}` are written on 2.0.29 too. A throw in `execute.before` blocks the tool call and the message reaches the model (verified with a scratch plugin); no deny case is in the spec because a real judge deny is not deterministic.
+Resolved (2026-11-07): the gh-guard opencode case is green. `server.ts` registers `execute.before` and reviews the write, so `review.jsonl` and `~/.agents/plugins/gh-guard/{model,rules}` are written on 2.0.29 too. A throw in `execute.before` blocks the tool call and the message reaches the model (verified with a scratch plugin); no deny case is in the spec because a real judge deny is not deterministic.
 
 ## Files
 

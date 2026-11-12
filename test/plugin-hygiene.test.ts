@@ -32,8 +32,8 @@ describe("plugin hygiene rules", () => {
     expect(rule.applies("const DEFAULT_JUDGE_TIMEOUT_MS = 120000")).toBe(true)
     expect(rule.ok("const DEFAULT_JUDGE_TIMEOUT_MS = 60000")).toBe(false)
     expect(rule.ok("const DEFAULT_JUDGE_TIMEOUT_MS = 240000")).toBe(true)
-    expect(rule.ok('const raw = env.TASK_GH_GUARD_REVIEW_TIMEOUT ?? "60"')).toBe(false)
-    expect(rule.ok('const raw = env.TASK_GH_GUARD_REVIEW_TIMEOUT ?? "120"')).toBe(true)
+    expect(rule.ok('const raw = env.GH_GUARD_REVIEW_TIMEOUT ?? "60"')).toBe(false)
+    expect(rule.ok('const raw = env.GH_GUARD_REVIEW_TIMEOUT ?? "120"')).toBe(true)
   })
 })
 

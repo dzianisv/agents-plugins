@@ -30,15 +30,15 @@ const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\
 test("shows the message once per window and toasts through the client", async () => {
   const toasts: any[] = []
   const client = { tui: { showToast: async (arg: any) => void toasts.push(arg) } }
-  expect(await notify("turn-check", "audit failed:\n boom", { client })).toBe(true)
-  expect(await notify("turn-check", "audit failed: boom", { client })).toBe(false)
-  expect(calls()).toEqual(["turn-check|audit failed: boom"])
-  expect(toasts[0].body).toMatchObject({ title: "turn-check", message: "audit failed: boom", variant: "error" })
+  expect(await notify("agents-md-guard", "audit failed:\n boom", { client })).toBe(true)
+  expect(await notify("agents-md-guard", "audit failed: boom", { client })).toBe(false)
+  expect(calls()).toEqual(["agents-md-guard|audit failed: boom"])
+  expect(toasts[0].body).toMatchObject({ title: "agents-md-guard", message: "audit failed: boom", variant: "error" })
 })
 
 test("dedupe false shows a repeated message every time", async () => {
-  expect(await notify("turn-check feedback", "1 rule violation(s): a", { dedupe: false })).toBe(true)
-  expect(await notify("turn-check feedback", "1 rule violation(s): a", { dedupe: false })).toBe(true)
+  expect(await notify("agents-md-guard feedback", "1 rule violation(s): a", { dedupe: false })).toBe(true)
+  expect(await notify("agents-md-guard feedback", "1 rule violation(s): a", { dedupe: false })).toBe(true)
   expect(calls()).toHaveLength(2)
 })
 

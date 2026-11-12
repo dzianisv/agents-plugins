@@ -1,0 +1,20 @@
+{
+  "name": "opencode-agents-md-guard",
+  "version": "0.7.0",
+  "description": "opencode plugin: when a turn finishes, a cheap model checks the transcript against ~/.agents/AGENTS.md and feeds violations back.",
+  "type": "module",
+  "main": "server.ts",
+  "exports": {
+    ".": "./server.ts"
+  },
+  "files": ["server.ts", "src/", "hooks/", "bin/"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": ["opencode", "plugin", "agents-md", "rules", "audit", "review"],
+  "author": "dzianisv",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}

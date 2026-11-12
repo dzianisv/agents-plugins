@@ -1,0 +1,8 @@
+{
+  "name": "codeindex",
+  "description": "Warns or blocks a new exported declaration when an indexed repo already provides it.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Dzianis Vashchuk"
+  }
+}

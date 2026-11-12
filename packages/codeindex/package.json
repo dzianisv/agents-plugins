@@ -1,0 +1,24 @@
+{
+  "name": "opencode-codeindex",
+  "version": "0.1.0",
+  "description": "opencode and Claude Code plugin: warn or block a new exported declaration when an indexed repo already provides it.",
+  "type": "module",
+  "main": "server.ts",
+  "exports": {
+    ".": "./server.ts"
+  },
+  "files": ["server.ts", "src/", "hooks/", "bin/"],
+  "bin": {
+    "codeindex": "./bin/codeindex"
+  },
+  "scripts": {
+    "test": "bun test",
+    "test:live": "bun e2e/live.ts"
+  },
+  "keywords": ["opencode", "plugin", "reuse", "index", "guard"],
+  "author": "Dzianis Vashchuk",
+  "license": "MIT",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  }
+}

@@ -69,7 +69,7 @@ opencode plugin add "github:dzianisv/agents-plugins#main::path:packages/agents-m
 opencode plugin add "github:dzianisv/agents-plugins#main::path:packages/gh-guard"
 ```
 
-`#main` follows the current release line. Replace it with a tag (for example `#agents-md-guard-v0.8.0`) when you want a fixed version.
+`#main` follows the current release line. Replace it with a tag from the repo's releases when you want a fixed version.
 
 opencode, from a local clone you are working on:
 

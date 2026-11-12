@@ -52,6 +52,13 @@ type AutoLimitResumeConfig = {
   watchdogMs: number
   injectWindowMs: number
   injectPerWindow: number
+  /**
+   * Minimum gap between two `[auto-resume]` prompts for the SAME model in one
+   * session. A limit episode retries every few minutes; nudging on every retry
+   * flooded the session (19 identical prompts on 2026-11-10). One nudge per
+   * cooldown still resumes as soon as the quota is plausibly back.
+   */
+  rePromptMs: number
 }
 
 const DEFAULTS: AutoLimitResumeConfig = {
@@ -68,7 +75,8 @@ const DEFAULTS: AutoLimitResumeConfig = {
   switchAfterAttempts: 2,
   watchdogMs: 15_000,
   injectWindowMs: 3600_000,
-  injectPerWindow: 8,
+  injectPerWindow: 3,
+  rePromptMs: 30 * 60_000,
 }
 
 function resolveConfig(raw: Partial<AutoLimitResumeConfig> | undefined): AutoLimitResumeConfig {
@@ -228,6 +236,19 @@ type Pending = {
   message: string
   planWide?: boolean
   tried?: string[]
+  /**
+   * Model that already received an `[auto-resume]` prompt in this episode.
+   * A continuation is delivered once per model per episode: re-prompting the
+   * same model that is still limited only repeats the message (19 identical
+   * prompts on 2026-11-10). Cleared when the user prompts the session.
+   */
+  promptedModel?: string
+  /** When the last `[auto-resume]` prompt went out for `promptedModel`. */
+  lastPromptAt?: number
+  /** Provider-declared reset time for the current limit, if it gave one. */
+  resetsAt?: number
+  /** Stall toast already shown for this episode. */
+  notifiedStall?: boolean
 }
 
 /** One recorded injection, keyed `sessionID|n` (see package rule: injection ceiling). */
@@ -492,6 +513,44 @@ export default {
         (pending.reason === "free-limit" || pending.failures >= cfg.switchAfterAttempts)
       const target = shouldSwitch ? chooseFallback(pending) : undefined
 
+      // One `[auto-resume]` per model per cooldown. A model that already got
+      // the continuation and is still limited will only fail again, so
+      // re-sending on every retry just floods the session (19 identical
+      // prompts observed on 2026-11-10). The cooldown keeps a resume possible
+      // once the quota is plausibly back; a provider reset time or a new user
+      // message lifts it immediately.
+      const injectModel = modelKey(target) ?? current
+      const sincePrompt = pending.lastPromptAt ? now - pending.lastPromptAt : Number.POSITIVE_INFINITY
+      const resetPassed = !!pending.resetsAt && now >= pending.resetsAt
+      if (injectModel && pending.promptedModel === injectModel && sincePrompt < cfg.rePromptMs && !resetPassed) {
+        // Wake at whichever comes first: the cooldown end or the provider's
+        // declared reset. Clamping to maxDelayMs here would burn every attempt
+        // in seconds and give up long before the quota is back.
+        const cooldownLeft = Math.max(250, cfg.rePromptMs - sincePrompt)
+        const resetLeft = pending.resetsAt ? Math.max(250, pending.resetsAt - now) : cooldownLeft
+        const waitMs = Math.max(250, Math.min(cooldownLeft, resetLeft))
+        pending.attempts += 1
+        pending.nextAt = now + waitMs
+        record({
+          event: "suppress",
+          sessionID,
+          model: injectModel,
+          attempt: pending.attempts,
+          reason: "cooldown",
+          retryInMs: waitMs,
+        })
+        if (!pending.notifiedStall) {
+          pending.notifiedStall = true
+          const when = pending.resetsAt
+            ? `declared reset ${new Date(pending.resetsAt).toLocaleString()}`
+            : `${Math.round(cfg.rePromptMs / 60_000)} min`
+          toast(`${injectModel} is still limited; next automatic resume in ${when}. Send a message earlier to continue now.`, "warning")
+        }
+        persist()
+        arm(sessionID)
+        return
+      }
+
       try {
         if (target) {
           const from = modelKey({ providerID: pending.failedProviderID, id: pending.failedModelID })
@@ -512,6 +571,9 @@ export default {
         pending = registry.state.sessions[sessionID]
         if (!pending) return
         pending.attempts += 1
+        pending.promptedModel = injectModel
+        pending.lastPromptAt = Date.now()
+        pending.notifiedStall = false
         pending.nextAt = Date.now() + (pending.planWide ? cfg.maxDelayMs : backoff(pending.attempts))
         registry.state.injected = {
           ...(registry.state.injected ?? {}),
@@ -579,6 +641,7 @@ export default {
       pending.reason = verdict.reason
       pending.message = verdict.message
       pending.planWide = verdict.planWide
+      pending.resetsAt = verdict.resetsAt ?? pending.resetsAt
 
       // If the run that just failed was our failover target, that target is
       // now the failed model; pick a different one next time.
@@ -644,6 +707,24 @@ export default {
             if (!pending) continue
             toast(`Resumed ${label(pending)}: the task completed.`, "success")
             drop(sessionID, "succeeded", { attempts: pending.attempts })
+            continue
+          }
+
+          if (type === "session.next.prompted" || type === "session.next.prompt.admitted") {
+            const sessionID = sessionIDOf(data)
+            const pending = registry.state.sessions[sessionID]
+            if (!pending) continue
+            const text = String(data?.prompt?.text ?? "")
+            // Our own continuation must not reset the episode, or the plugin
+            // would keep re-prompting the same limited model.
+            if (text.startsWith(AUTO_RESUME_PREFIX)) continue
+            // A real user message starts a new episode: one resume is allowed again.
+            pending.promptedModel = undefined
+            pending.lastPromptAt = undefined
+            pending.resetsAt = undefined
+            pending.notifiedStall = false
+            record({ event: "episode-reset", sessionID, attempts: pending.attempts })
+            persist()
             continue
           }
 

@@ -1,7 +1,7 @@
 // The one audit pipeline both runtimes share: skip unchanged turns, build the prompt, call the
 // runtime's judge, record the verdict, mark the message audited only on a valid verdict, and leave
 // either the feedback note or a loud error note for the next prompt.
-import { buildPrompt, currentTurn, ERROR_PREFIX, formatError, formatFeedback, hasAgentWork, parseVerdict, type Msg, type Verdict } from "./prompt"
+import { buildPrompt, currentTurn, ERROR_PREFIX, formatError, formatFeedback, hasAgentWork, parseVerdict, requiresLinkedReferences, unlinkedReferenceViolation, type Msg, type Verdict } from "./prompt"
 
 /** What one audit attempt did. */
 export type AuditOutcome = "skipped" | "pass" | "fail" | "error"
@@ -77,16 +77,22 @@ export async function auditOnce(options: AuditOptions): Promise<AuditOutcome> {
     return fail("unparseable verdict", `unparseable verdict: ${JSON.stringify(reply.slice(0, 160))}`, { reply: reply.slice(0, 300) })
   }
 
+  // The judge can miss a bare commit or ticket key, so enforce the link rule from the latest reply.
+  const detected = requiresLinkedReferences(rules) ? unlinkedReferenceViolation(options.msgs) : null
+  const violations = [...(detected ? [detected] : []), ...verdict.violations].filter(
+    (violation, index, all) => all.findIndex((other) => other.rule === violation.rule) === index,
+  )
+  const result: Verdict = violations.length ? { verdict: "FAIL", violations } : { verdict: "PASS", violations: [] }
   options.store.markAudited(options.messageID)
-  options.record({ ...base, ...options.extra?.(), ms: now() - started, ...verdict })
-  options.onVerdict?.(verdict)
-  if (verdict.verdict === "PASS") {
+  options.record({ ...base, ...options.extra?.(), ms: now() - started, ...result })
+  options.onVerdict?.(result)
+  if (result.verdict === "PASS") {
     options.store.clearPending()
     return "pass"
   }
   // Never re-send a violation already delivered: a rule the agent has been told about once is done.
   const already = new Set(options.store.deliveredRules?.() ?? [])
-  const fresh = verdict.violations.filter((violation) => !already.has(violation.rule))
+  const fresh = result.violations.filter((violation) => !already.has(violation.rule))
   if (!fresh.length) {
     options.store.clearPending()
     return "pass"

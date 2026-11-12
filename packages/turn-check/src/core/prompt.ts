@@ -220,6 +220,50 @@ export function formatFeedback(violations: Violation[]): string {
   return `${FEEDBACK_PREFIX} supervisor audit of your previous work found rule violations:\n${lines.join("\n")}\nCorrect these first if they still apply. Do not repeat them.`
 }
 
+const LINK_RULE = "Every reference to a code location, commit, PR or Jira ticket is a clickable link"
+
+/** True when the rules require commit, PR and Jira references to be clickable links. */
+export function requiresLinkedReferences(rules: string): boolean {
+  return /clickable link/i.test(rules) && /\b(?:commit|PR|Jira)\b/i.test(rules)
+}
+
+/** Bare ticket keys, PR numbers and commit ids left outside Markdown links, code spans and URLs. */
+export function bareReferences(text: string): string[] {
+  const visible = text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/!?\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/<https?:\/\/[^>]+>/g, " ")
+    .replace(/https?:\/\/\S+/g, " ")
+  const patterns = [/\b[A-Z][A-Z0-9]+-\d+\b/g, /(?:^|[\s(])#\d+\b/g, /\bPR\s+#?\d+\b/gi, /\b[0-9a-f]{7,40}\b/g]
+  const found = new Set<string>()
+  for (const pattern of patterns) {
+    for (const match of visible.matchAll(pattern)) found.add(match[0].trim().replace(/^[(\s]+/, ""))
+  }
+  return [...found]
+}
+
+/** A deterministic violation when the newest assistant text carries unlinked references. */
+export function unlinkedReferenceViolation(msgs: Msg[]): Violation | null {
+  const lastUser = msgs.map((m) => m.info.role).lastIndexOf("user")
+  for (let i = lastUser + 1; i < msgs.length; i++) {
+    const message = msgs[i]
+    if (message.info.role !== "assistant") continue
+    const text = message.parts
+      .flatMap((part) => (part.type === "text" && !part.synthetic && !part.ignored ? [part.text] : []))
+      .join("\n")
+    const refs = bareReferences(text)
+    if (!refs.length) continue
+    const line = text.split("\n").find((candidate) => refs.some((ref) => candidate.includes(ref))) ?? refs.join(", ")
+    return {
+      rule: LINK_RULE,
+      evidence: `#${i} "${clip(line.trim(), 300)}"`,
+      fix: `Replace every bare reference with its clickable URL: ${refs.join(", ")}.`,
+    }
+  }
+  return null
+}
+
 /** True only for a note that lists at least one violation; errors and empty notes are never injected. */
 export function isViolationFeedback(feedback: string): boolean {
   if (!feedback || feedback.startsWith(ERROR_PREFIX)) return false

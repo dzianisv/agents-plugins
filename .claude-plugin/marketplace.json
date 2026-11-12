@@ -35,6 +35,15 @@
       }
     },
     {
+      "name": "codeindex",
+      "source": "./packages/codeindex",
+      "description": "Warns or blocks a new exported declaration when an indexed repo already provides it. The index is built from a repo list and includes real call sites.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Dzianis Vashchuk"
+      }
+    },
+    {
       "name": "turn-check",
       "source": "./packages/turn-check",
       "description": "When the agent stops, a cheap model audits the whole conversation against ~/.agents/AGENTS.md. Rule violations are fed back to the agent on your next message.",

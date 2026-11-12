@@ -5,7 +5,10 @@ import { join } from "node:path"
 
 const dir = mkdtempSync(join(tmpdir(), "supervisor-v2-"))
 const rules = join(dir, "AGENTS.md")
-writeFileSync(rules, "Replies max 6 lines.")
+writeFileSync(
+  rules,
+  "Replies max 6 lines.\nEvery reference to a code location, commit, PR or Jira ticket is a clickable link in chat, Jira, Slack, PR text, review replies and documents.",
+)
 process.env.SUPERVISOR_RULES = rules
 process.env.SUPERVISOR_HOME = join(dir, "state")
 process.env.AGENTS_NOTIFY_CMD = "true"
@@ -120,6 +123,20 @@ test("a FAIL verdict is injected immediately and not re-attached to the next use
   await hook(next)
   expect(next.messages[0].content).toHaveLength(1)
   expect(next.messages[1].content).toHaveLength(1)
+})
+
+test("a PASS judge cannot hide bare references in the latest reply", async () => {
+  const convo = [
+    { id: "u1", type: "user", text: "what is left?" },
+    { id: "a1", type: "assistant", time: { created: 2, completed: 3 }, content: [{ type: "text", text: "Pushed e3ede00 for SHARED-3142; both are ready." }] },
+  ]
+  const { ctx, calls, events } = fakeCtx({ verdict: PASS, convo })
+  await plugin.setup(ctx)
+  idle(events, "links")
+  await waitFor(() => calls.injected.length === 1)
+  expect(calls.injected[0].text).toContain("Every reference to a code location, commit, PR or Jira ticket is a clickable link")
+  expect(calls.injected[0].text).toContain("e3ede00")
+  expect(calls.injected[0].text).toContain("SHARED-3142")
 })
 
 test("a later PASS injects nothing more", async () => {

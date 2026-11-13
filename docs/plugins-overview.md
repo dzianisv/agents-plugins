@@ -1,57 +1,26 @@
 # Plugins in this repo
 
-What runs, when it runs, what it touches on disk, and why it exists. This is a plugin map, not a
-service map: the stage boxes (user message, tool call, turn end) are time anchors, not services.
+What runs, when it runs, what it touches on disk, and why it exists. The nodes are the plugins and
+their stores; the triggers are on the edges.
 
 ## When they run
 
-Before and during a turn:
-
-![Plugins before and during a turn](plugins-when-before.png)
-
-After the turn:
-
-![Plugins at turn end and later](plugins-when-after.png)
-
-<details>
-<summary>Mermaid source</summary>
-
 ```mermaid
-%% before.mmd
-flowchart TB
-  U["user message"] -->|"every prompt"| OV(["overhelm"])
-  U -->|"capture cues each prompt,<br/>remind once when eligible"| SS(["session-self-improve"])
-  T["tool call"] -->|"shell command"| AG(["agents-md-guard"])
-  T -->|"git or gh write"| GG(["gh-guard"])
-  T -->|"file write"| CI(["codeindex"])
-  classDef stage fill:#eef3fb,stroke:#90a4ae
-  class U,T stage
+flowchart LR
+  RT("opencode runtime") -->|"prompt"| OV("overhelm")
+  RT -->|"shell or turn end"| AG("agents-md-guard")
+  RT -->|"3 actions, once"| SS("session-self-improve")
+  RT -->|"git/gh or turn end"| GG("gh-guard")
+  RT -->|"file write"| CI("codeindex")
+  RT -->|"turn end: judge"| RF("reflection")
+  RT -->|"turn end: review"| AR("auto-review")
+  RT -->|"30 min busy"| SA("session-autoreflect")
+  RT -->|"10 min idle"| SI("session-index")
 ```
-
-```mermaid
-%% after.mmd
-flowchart TB
-  E["turn end"] -->|"judge completion"| RF(["reflection"])
-  E -->|"second-model review"| AR(["auto-review"])
-  E -->|"CI red or pending"| GG(["gh-guard"])
-  E -->|"audit rule compliance"| AG(["agents-md-guard"])
-  B["busy-time threshold<br/>default 30 minutes"] -->|"arm reminder, attach on next prompt"| SA(["session-autoreflect"])
-  I["10 minutes after execution"] -->|"one-line recap"| SI(["session-index"])
-  classDef stage fill:#eef3fb,stroke:#90a4ae
-  class E,B,I stage
-```
-
-</details>
 
 ## What they read and write
 
-![Plugin stores](plugins-disk.png)
-
-<details>
-<summary>Mermaid source</summary>
-
 ```mermaid
-%% disk.mmd
 flowchart LR
   AG(["agents-md-guard"]) -.->|"writes"| SUPA[("~/.cache/supervisor<br/>audits.jsonl, pending, locks")]
   AG -.->|"reads"| RULES[("~/.agents/AGENTS.md<br/>~/.agents/MEMORY.md<br/>project AGENTS.md and MEMORY.md")]
@@ -68,8 +37,6 @@ flowchart LR
   OV(["overhelm"]) -.->|"reads"| OVF[("~/.agents/overhelm.md")]
   AR(["auto-review"]) -.->|"reads"| ARCFG[("~/.config/opencode/plugin<br/>auto-review.json")]
 ```
-
-</details>
 
 ## The plugins
 

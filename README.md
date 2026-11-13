@@ -1,4 +1,4 @@
-# OpenCode Plugins
+# Agents Plugins
 
 > ⚠️ **Archived — superseded by [dzianisv/agents-supervisor](https://github.com/dzianisv/agents-supervisor).**
 > The reflection/supervisor plugin was extracted into its own repo (rebranded
@@ -59,6 +59,46 @@ Install shape for both runtimes:
 | **telegram** (`telegram.ts`) | yes | no | Two-way Telegram: posts task completion, takes text or voice replies (Whisper) back into the session. | `./install.sh` or `npm run install:telegram` |
 | **auto-limit-resume** (`opencode-auto-limit-nudge.ts`) | yes | no | When a run dies on a usage/rate limit, switches to a configured fallback model (free-tier limits) or retries with backoff, then re-prompts the session so the task continues. Pending work is persisted and restored after a plugin reload; never cancels on a started run. | `./install.sh` |
 | **worktree** (`worktree.ts`) | yes | no | Git worktree status tool: dirty state, branch, active sessions. | `./install.sh` |
+
+## Plugin map
+
+When the plugins run:
+
+```mermaid
+flowchart LR
+  RT("opencode runtime") -->|"prompt"| OV("overhelm")
+  RT -->|"shell or turn end"| AG("agents-md-guard")
+  RT -->|"3 actions, once"| SS("session-self-improve")
+  RT -->|"git/gh or turn end"| GG("gh-guard")
+  RT -->|"file write"| CI("codeindex")
+  RT -->|"turn end: judge"| RF("reflection")
+  RT -->|"turn end: review"| AR("auto-review")
+  RT -->|"30 min busy"| SA("session-autoreflect")
+  RT -->|"10 min idle"| SI("session-index")
+```
+
+What each plugin reads and writes on disk:
+
+```mermaid
+flowchart LR
+  AG(["agents-md-guard"]) -.->|"writes"| SUPA[("~/.cache/supervisor<br/>audits.jsonl, pending, locks")]
+  AG -.->|"reads"| RULES[("~/.agents/AGENTS.md<br/>~/.agents/MEMORY.md<br/>project AGENTS.md and MEMORY.md")]
+  AG -.->|"creates once"| CMD[("~/.agents/plugins/<br/>agents-md-guard/commands")]
+  GG(["gh-guard"]) -.->|"creates once"| GGCFG[("~/.agents/plugins/gh-guard<br/>model, rules")]
+  GG -.->|"writes"| GGST[("~/.agents/state/gh-guard<br/>review.jsonl<br/>runtime-session.json")]
+  CI(["codeindex"]) -.->|"reads"| CIIDX[("~/.agents/plugins/codeindex<br/>index.json")]
+  CI -.->|"writes"| CILOG[("~/.agents/state/codeindex<br/>decisions.jsonl")]
+  RF(["reflection"]) -.->|"writes"| REFL[(".reflection/<br/>verdict_session.json<br/>disabled, debug.log")]
+  SA(["session-autoreflect"]) -.->|"writes"| SAEV[("~/.cache/session-autoreflect<br/>events.jsonl")]
+  SA -.->|"reads"| SACFG[("~/.config/opencode<br/>session-autoreflect.json")]
+  SS(["session-self-improve"]) -.->|"writes"| SSQ[("~/.cache/session-self-improve<br/>queue, markers")]
+  SI(["session-index"]) -.->|"writes"| SIDX[("~/.agents/sessions.csv<br/>session-index.log")]
+  OV(["overhelm"]) -.->|"reads"| OVF[("~/.agents/overhelm.md")]
+  AR(["auto-review"]) -.->|"reads"| ARCFG[("~/.config/opencode/plugin<br/>auto-review.json")]
+```
+
+The table with triggers, disk changes and the reason for each plugin is in
+[docs/plugins-overview.md](docs/plugins-overview.md).
 
 ## Install agents-md-guard and gh-guard
 

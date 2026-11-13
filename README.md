@@ -36,6 +36,8 @@ We measured it: 143 real OpenCode + Claude Code sessions, 227 stops classified. 
 
 ## Plugins
 
+When each plugin runs, what it writes to disk and why: [docs/plugins-overview.md](docs/plugins-overview.md).
+
 Install shape for both runtimes:
 
 - **opencode** — add `/abs/path/to/agents-plugins/packages/<name>` (the directory, not a file) to `plugins` in `~/.config/opencode/opencode.json`, or run `opencode plugin add <path>`, then restart opencode. In the table `opencode: <name>` means that package directory.

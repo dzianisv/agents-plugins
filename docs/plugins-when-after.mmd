@@ -1,0 +1,11 @@
+%%{init: {"flowchart": {"nodeSpacing": 70, "rankSpacing": 90, "wrappingWidth": 460}}}%%
+flowchart TB
+  E["turn end"] -->|"judge completion"| RF(["reflection"])
+  E -->|"second-model review"| AR(["auto-review"])
+  E -->|"CI red or pending"| GG(["gh-guard"])
+  E -->|"audit rule compliance"| AG(["agents-md-guard"])
+  B["busy-time threshold<br/>default 30 minutes"] -->|"arm reminder, attach on next prompt"| SA(["session-autoreflect"])
+  I["10 minutes after execution"] -->|"one-line recap"| SI(["session-index"])
+
+  classDef stage fill:#eef3fb,stroke:#90a4ae
+  class E,B,I stage

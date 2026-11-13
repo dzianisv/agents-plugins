@@ -1,0 +1,10 @@
+%%{init: {"flowchart": {"nodeSpacing": 70, "rankSpacing": 90, "wrappingWidth": 460}}}%%
+flowchart TB
+  U["user message"] -->|"every prompt"| OV(["overhelm"])
+  U -->|"capture cues each prompt,<br/>remind once when eligible"| SS(["session-self-improve"])
+  T["tool call"] -->|"shell command"| AG(["agents-md-guard"])
+  T -->|"git or gh write"| GG(["gh-guard"])
+  T -->|"file write"| CI(["codeindex"])
+
+  classDef stage fill:#eef3fb,stroke:#90a4ae
+  class U,T stage

@@ -7,21 +7,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const evalsDir = path.resolve(__dirname, "..", "evals")
 
 const env = { ...process.env }
-const rawBase = env.AZURE_OPENAI_BASE_URL || env.AZURE_OPENAI_API_BASE_URL
-
-if (rawBase) {
-  try {
-    const url = new URL(rawBase)
-    const baseHost = `${url.protocol}//${url.host}`
-    if (baseHost && rawBase !== baseHost) {
-      env.AZURE_OPENAI_BASE_URL = baseHost
-      env.AZURE_OPENAI_API_BASE_URL = baseHost
-    }
-  } catch {
-    // Leave env as-is if AZURE_OPENAI_BASE_URL is not a valid URL
-  }
-}
-
 const cliArgs = process.argv.slice(2)
 const args = ["promptfoo", "eval", ...cliArgs]
 const result = spawnSync("npx", args, {
@@ -35,12 +20,10 @@ const exitCode = result.status ?? 1
 // Suite pass-rate threshold (cost/fidelity lever).
 //
 // promptfoo exits non-zero if ANY single case fails. That is the right default
-// for the high-fidelity gpt-5.1 judge (it scores a clean 34/34). But when a
-// cheaper model is used to cut CI cost (e.g. azureopenai:chat:gpt-5.4-nano,
-// ~25x cheaper), it scores ~33/34 — it disagrees with gpt-5.1 on a small number
-// of *borderline* cases (calibration variance, not the premature-stop logic the
-// suite exists to protect). EVAL_PASS_THRESHOLD lets CI stay green at a defined
-// pass rate while still going red on a real regression (a 2nd failure).
+// for the judge. A cheaper model may disagree on a small number of *borderline*
+// cases (calibration variance, not the premature-stop logic the suite exists to
+// protect). EVAL_PASS_THRESHOLD lets CI stay green at a defined pass rate while
+// still going red on a real regression (a 2nd failure).
 //
 // Set EVAL_PASS_THRESHOLD=0.97 to tolerate <=1 of 34 cases. Unset => native
 // promptfoo behavior (every case must pass). The check only ever RELAXES a

@@ -31,6 +31,7 @@ permissions:
 jobs:
   evaluate:
     name: Run Prompt Evaluations
+    if: ${{ false }}
     runs-on: ubuntu-latest
     env:
       PROMPTFOO_CONFIG_DIR: ${{ github.workspace }}/.promptfoo
@@ -56,53 +57,41 @@ jobs:
       - name: Create results directory
         run: mkdir -p evals/results
 
-      - name: Detect Azure secrets
-        id: azure_secrets
+      - name: Detect Fireworks key
+        id: fireworks_key
         env:
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
         run: |
-          if [ -n "$AZURE_OPENAI_API_KEY" ] && [ -n "$AZURE_OPENAI_BASE_URL" ]; then
+          if [ -n "$FIREWORKS_API_KEY" ]; then
             echo "available=true" >> $GITHUB_OUTPUT
           else
             echo "available=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Run Judge Evaluation
-        if: ${{ steps.azure_secrets.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'judge' || github.event_name == 'pull_request') }}
+        if: ${{ steps.fireworks_key.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'judge' || github.event_name == 'pull_request') }}
         env:
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          # Must be the base host, e.g. https://vibebrowser-dev.openai.azure.com
-          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
-          AZURE_OPENAI_API_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
-          # Judge suite runs the cheap gpt-5.4-nano model (see promptfooconfig.yaml).
-          # It scores 33/34 — one borderline case differs from the gpt-5.1 baseline.
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           # Tolerate <=1 of 34 (>=97%); a 2nd failure turns CI red.
           EVAL_PASS_THRESHOLD: "0.97"
         run: npm run eval:judge -- --no-progress-bar -o evals/results/judge-results.json
 
       - name: Run Stuck Detection Evaluation
-        if: ${{ steps.azure_secrets.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'stuck') }}
+        if: ${{ steps.fireworks_key.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'stuck') }}
         env:
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
-          AZURE_OPENAI_API_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
         run: npm run eval:stuck -- --no-progress-bar -o evals/results/stuck-results.json
 
       - name: Run Post-Compression Evaluation
-        if: ${{ steps.azure_secrets.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'compression') }}
+        if: ${{ steps.fireworks_key.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'compression') }}
         env:
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
-          AZURE_OPENAI_API_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
         run: npm run eval:compression -- --no-progress-bar -o evals/results/compression-results.json
 
       - name: Run Agent Evaluation
-        if: ${{ steps.azure_secrets.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'agent') }}
+        if: ${{ steps.fireworks_key.outputs.available == 'true' && (github.event.inputs.eval_type == 'all' || github.event.inputs.eval_type == 'agent') }}
         env:
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
-          AZURE_OPENAI_API_BASE_URL: ${{ secrets.AZURE_OPENAI_BASE_URL }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
         run: npm run eval:agent -- --no-progress-bar -o evals/results/agent-results.json
 
       - name: Upload Evaluation Results

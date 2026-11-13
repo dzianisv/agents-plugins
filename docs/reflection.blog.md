@@ -349,7 +349,7 @@ The antipattern section of the prompt is directly derived from the 227-session m
 
 `promptfoo eval` exits non-zero on any single case failure. With the high-fidelity judge (`gpt-5.1`) this is correct -- it scores 34/34 -- but at meaningful cost per run.
 
-We benchmarked every model available on our dev Azure endpoint (probed by actual chat call, not the region catalog -- 99% of catalog entries return `DeploymentNotFound`):
+We benchmarked every model we could call directly (probed by actual chat call, not the public catalog):
 
 | Model | Judge score | Relative cost |
 |-------|-------------|---------------|

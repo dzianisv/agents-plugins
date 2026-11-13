@@ -314,9 +314,9 @@ async function evaluateWithLLM(
   agentOutput: string,
   expectedComplete: boolean
 ): Promise<{ score: number; feedback: string }> {
-  const GITHUB_TOKEN = process.env.GITHUB_TOKEN
-  if (!GITHUB_TOKEN) {
-    console.warn("[WARN] GITHUB_TOKEN not set, falling back to heuristic evaluation")
+  const FIREWORKS_API_KEY = process.env.FIREWORKS_API_KEY
+  if (!FIREWORKS_API_KEY) {
+    console.warn("[WARN] FIREWORKS_API_KEY not set, falling back to heuristic evaluation")
     return evaluateHeuristic(agentOutput, expectedComplete)
   }
 
@@ -346,14 +346,14 @@ Reply with JSON only:
 }`
 
   try {
-    const response = await fetch("https://models.inference.ai.azure.com/chat/completions", {
+    const response = await fetch("https://api.fireworks.ai/inference/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${GITHUB_TOKEN}`,
+        "Authorization": `Bearer ${process.env.FIREWORKS_API_KEY ?? ""}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model: process.env.EVAL_MODEL ?? "accounts/fireworks/models/deepseek-v4p1-flash",
         messages: [{ role: "user", content: evalPrompt }],
         temperature: 0.1,
         max_tokens: 500

@@ -181,7 +181,7 @@ npm run test:reflection
 # All unit + integration
 npm test
 
-# Judge accuracy eval (34-case suite — needs Azure creds in .env.d/azure-dev.env)
+# Judge accuracy eval (34-case suite — needs FIREWORKS_API_KEY)
 npm run eval:judge
 
 # Agent eval (6 task scenarios)

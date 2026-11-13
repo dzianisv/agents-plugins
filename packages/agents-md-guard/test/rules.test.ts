@@ -33,6 +33,21 @@ describe("rules files", () => {
     expect(composed).toContain("PROJECT NESTED RULE")
   })
 
+  test("reads memory files with a memory header", () => {
+    const home = temp()
+    const project = temp()
+    mkdirSync(join(home, ".agents"), { recursive: true })
+    mkdirSync(join(project, ".agents"))
+    writeFileSync(join(home, ".agents", "MEMORY.md"), "GLOBAL LESSON")
+    writeFileSync(join(project, ".agents", "MEMORY.md"), "PROJECT LESSON")
+
+    const sources = readRules({ HOME: home }, project)
+    expect(sources.map((source) => source.text)).toEqual(["GLOBAL LESSON", "PROJECT LESSON"])
+    const composed = composeRules(sources)
+    expect(composed).toContain(`# Memory from ${join(home, ".agents", "MEMORY.md")}\nGLOBAL LESSON`)
+    expect(composed).toContain(`# Memory from ${join(project, ".agents", "MEMORY.md")}\nPROJECT LESSON`)
+  })
+
   test("skips a missing or empty file and de-duplicates the same path", () => {
     const project = temp()
     writeFileSync(join(project, "AGENTS.md"), "   ")

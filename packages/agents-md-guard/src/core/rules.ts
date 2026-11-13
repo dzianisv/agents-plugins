@@ -11,7 +11,15 @@ export type RulesSource = { path: string; text: string }
 /** The files read, in order, for a session running in `cwd`. */
 export function rulesPaths(env: Env = process.env, cwd = process.cwd()): string[] {
   if (env.SUPERVISOR_RULES) return [env.SUPERVISOR_RULES]
-  return [join(env.HOME ?? homedir(), ".agents", "AGENTS.md"), join(cwd, "AGENTS.md"), join(cwd, ".agents", "AGENTS.md")]
+  const home = env.HOME ?? homedir()
+  return [
+    join(home, ".agents", "AGENTS.md"),
+    join(home, ".agents", "MEMORY.md"),
+    join(cwd, "AGENTS.md"),
+    join(cwd, ".agents", "AGENTS.md"),
+    join(cwd, "MEMORY.md"),
+    join(cwd, ".agents", "MEMORY.md"),
+  ]
 }
 
 /** Every rules file that exists and is non-empty, global first. */
@@ -34,5 +42,10 @@ export function readRules(env: Env = process.env, cwd = process.cwd(), exists = 
 
 /** The composed rules text, each file under its own header. Empty when no file has rules. */
 export function composeRules(sources: RulesSource[]): string {
-  return sources.map((source) => `# Rules from ${source.path}\n${source.text}`).join("\n\n")
+  return sources
+    .map((source) => {
+      const label = source.path.split("/").pop() === "MEMORY.md" ? "Memory from" : "Rules from"
+      return `# ${label} ${source.path}\n${source.text}`
+    })
+    .join("\n\n")
 }
